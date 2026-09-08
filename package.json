@@ -1,0 +1,27 @@
+{
+  "name": "playarena",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:mobile": "npm run dev --workspace @playarena/mobile",
+    "dev:web": "npm run dev --workspace @playarena/arena-web",
+    "dev:api": "python -m uvicorn app.main:app --app-dir services/api --reload",
+    "lint": "npm run lint --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "test:web": "npm run test --workspace @playarena/arena-web",
+    "test:mobile": "npm run test --workspace @playarena/mobile",
+    "format": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "^3.6.2",
+    "typescript": "~5.8.3"
+  },
+  "overrides": {
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  }
+}

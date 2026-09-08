@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "allowJs": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@playarena/config": ["packages/config/src/index.ts"],
+      "@playarena/types": ["packages/types/src/index.ts"],
+      "@playarena/ui": ["packages/ui/src/index.ts"]
+    }
+  }
+}

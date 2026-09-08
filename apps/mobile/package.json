@@ -1,0 +1,36 @@
+{
+  "name": "@playarena/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "expo-router/entry",
+  "scripts": {
+    "dev": "expo start --clear",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^15.0.2",
+    "@playarena/config": "0.1.0",
+    "@playarena/types": "0.1.0",
+    "@react-native-async-storage/async-storage": "^2.2.0",
+    "@supabase/supabase-js": "^2.56.0",
+    "expo": "^57.0.18",
+    "expo-constants": "^57.0.16",
+    "expo-linear-gradient": "~57.0.1",
+    "expo-router": "~57.0.17",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.10",
+    "@typescript-eslint/eslint-plugin": "^8.41.0",
+    "@typescript-eslint/parser": "^8.41.0",
+    "babel-preset-expo": "~57.0.0",
+    "eslint": "^9.34.0",
+    "eslint-config-expo": "~57.0.2",
+    "typescript": "~6.0.3"
+  }
+}

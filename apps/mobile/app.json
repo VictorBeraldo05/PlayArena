@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "PlayArena",
+    "slug": "playarena",
+    "scheme": "playarena",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "extra": {
+      "locale": "pt-BR",
+      "timeZone": "America/Sao_Paulo"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-status-bar"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
