@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 
 import { ArenaMedia } from '../../../../components/arena-media';
-import { PlayerBottomNav } from '../../../../components/player-bottom-nav';
+import { PlayerBottomNav, usePlayerBottomNavigation } from '../../../../components/player-bottom-nav';
 import { formatCurrencyBRL } from '../../../../lib/format';
 
 type Court = { id: string; name: string; default_duration_minutes: number; sports: string[]; price_from: string | null };
@@ -17,6 +17,7 @@ const week = ['DOM', 'SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB'];
 export default function ArenaDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
+  const showPlayerNavigation = usePlayerBottomNavigation();
   const [arena, setArena] = useState<Arena | null>(null);
   const [error, setError] = useState('');
   const [showWeek, setShowWeek] = useState(false);
@@ -39,7 +40,7 @@ export default function ArenaDetailPage() {
   const todayHours = arena.opening_hours.filter((hour) => hour.weekday === new Date().getDay());
   const bookingHref = `/nova-reserva?${new URLSearchParams({ sport: primarySport }).toString()}`;
 
-  return <main className="min-h-[100dvh] bg-[#080D14] pb-44 text-white">
+  return <main className={`min-h-[100dvh] bg-[#080D14] text-white ${showPlayerNavigation ? 'pb-44' : 'pb-24'}`}>
     <section className="relative h-[252px] overflow-hidden rounded-b-[28px] bg-[#111923]">
       <ArenaMedia arena={arena} className="absolute inset-0" priority sport={primarySport} variant="hero" />
       <div aria-hidden="true" className="absolute inset-0 bg-gradient-to-b from-[#080D14]/45 via-transparent to-[#080D14]/95" />
@@ -52,7 +53,7 @@ export default function ArenaDetailPage() {
       <Section title="Horários"><div className="flex items-center justify-between border-b border-white/10 pb-4"><div><p className="text-sm font-bold">Hoje</p><p className="mt-1 text-sm text-[#AAB7C5]">{formatHours(todayHours)}</p></div><button className="text-sm font-bold text-[#8FFF3C]" onClick={() => setShowWeek(!showWeek)} type="button">{showWeek ? 'Ocultar semana' : 'Ver semana'} ›</button></div>{showWeek ? <div className="mt-4 space-y-2 text-sm">{week.map((label, index) => <div className="flex justify-between" key={label}><span className="font-bold text-[#D7DEE7]">{label}</span><span className="text-[#AAB7C5]">{formatHours(arena.opening_hours.filter((hour) => hour.weekday === index))}</span></div>)}</div> : null}</Section>
       {(arena.address || arena.phone || arena.whatsapp) ? <Section title="Informações"><div className="space-y-4 text-sm"><InfoRow icon={<PinIcon />} value={`${arena.address}${arena.address ? ', ' : ''}${arena.city} - ${arena.state}`} />{arena.whatsapp || arena.phone ? <InfoRow icon={<PhoneIcon />} value={formatPhone(arena.whatsapp || arena.phone || '')} /> : null}</div></Section> : null}
     </div>
-    <div className="fixed inset-x-0 bottom-[calc(64px+env(safe-area-inset-bottom))] z-20 px-4"><Link className="mx-auto flex min-h-14 max-w-[640px] items-center justify-center rounded-[26px] bg-[#8FFF3C] px-5 text-base font-extrabold text-[#080D14] shadow-[0_12px_30px_rgba(0,0,0,.35)]" href={bookingHref}>Ver horários disponíveis <span className="ml-2 text-lg">→</span></Link></div><PlayerBottomNav />
+    <div className={`fixed inset-x-0 z-20 px-4 ${showPlayerNavigation ? 'bottom-[calc(64px+env(safe-area-inset-bottom))]' : 'bottom-[max(1rem,env(safe-area-inset-bottom))]'}`}><Link className="mx-auto flex min-h-14 max-w-[640px] items-center justify-center rounded-[26px] bg-[#8FFF3C] px-5 text-base font-extrabold text-[#080D14] shadow-[0_12px_30px_rgba(0,0,0,.35)]" href={bookingHref}>Ver horários disponíveis <span className="ml-2 text-lg">→</span></Link></div><PlayerBottomNav />
   </main>;
 }
 

@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { formatCurrencyBRL } from '../lib/format';
-import { PlayerBottomNav } from './player-bottom-nav';
+import { PlayerBottomNav, usePlayerBottomNavigation } from './player-bottom-nav';
 import { ArenaMedia } from './arena-media';
 import { useAuth } from './use-auth';
 
@@ -13,6 +13,7 @@ type Arena = { id: string; name: string; city: string; description: string | nul
 
 export function PlayerDiscoveryHome() {
   const { profile } = useAuth();
+  const showPlayerNavigation = usePlayerBottomNavigation();
   const [sports, setSports] = useState<Sport[]>([]);
   const [arenas, setArenas] = useState<Arena[]>([]);
   const [query, setQuery] = useState('');
@@ -53,7 +54,7 @@ export function PlayerDiscoveryHome() {
   }, [arenas, query, selectedSport]);
   const greetingName = profile?.full_name?.split(' ')[0];
 
-  return <main className="discovery-page min-h-[100dvh] bg-[#080D14] pb-[calc(5.75rem+env(safe-area-inset-bottom))] text-white">
+  return <main className={`discovery-page min-h-[100dvh] bg-[#080D14] text-white ${showPlayerNavigation ? 'pb-[calc(5.75rem+env(safe-area-inset-bottom))]' : 'pb-[env(safe-area-inset-bottom)]'}`}>
     <div aria-hidden="true" className="discovery-haze fixed inset-x-0 top-0 h-[420px]" />
     <div className="relative mx-auto w-full max-w-[640px] px-4 pb-8 pt-[max(1.25rem,env(safe-area-inset-top))] sm:px-5">
       <header className="discovery-enter flex items-center justify-between gap-4">

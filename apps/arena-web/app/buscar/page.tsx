@@ -3,7 +3,7 @@
 import Image from 'next/image';
 import { Suspense, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { PlayerBottomNav } from '../../components/player-bottom-nav';
+import { PlayerBottomNav, usePlayerBottomNavigation } from '../../components/player-bottom-nav';
 import { PlayerDiscoveryHome } from '../../components/player-discovery-home';
 
 type Sport = { id: number; name: string; slug: string };
@@ -29,6 +29,7 @@ export function NewReservationPage() {
 
 function SearchContent() {
   const router = useRouter();
+  const showPlayerNavigation = usePlayerBottomNavigation();
   const params = useSearchParams();
   const [sports, setSports] = useState<Sport[]>([]);
   const [sport, setSport] = useState('');
@@ -91,7 +92,7 @@ function SearchContent() {
   }
 
   return (
-    <main className="search-orbit landing-night relative min-h-[100dvh] overflow-hidden bg-[#080D14] pb-[calc(5.75rem+env(safe-area-inset-bottom))] text-white">
+    <main className={`new-reservation-page search-orbit landing-night relative h-[100dvh] min-h-[100dvh] max-h-[100dvh] overflow-hidden bg-[#080D14] text-white ${showPlayerNavigation ? 'pb-[calc(4rem+env(safe-area-inset-bottom))]' : 'pb-[env(safe-area-inset-bottom)]'}`}>
       <Image alt="Arena noturna com gramado iluminado" className="landing-night-image absolute inset-0 z-0 object-cover object-center opacity-40" fill priority sizes="100vw" src="/img/playarena-hero.png" />
       <div aria-hidden="true" className="landing-night-haze landing-night-haze-left absolute z-[2]" />
       <div aria-hidden="true" className="landing-night-haze landing-night-haze-right absolute z-[2]" />
@@ -103,7 +104,7 @@ function SearchContent() {
       <div aria-hidden="true" className="landing-night-field absolute inset-x-0 bottom-0 z-[6]" />
       <div aria-hidden="true" className="search-stadium absolute inset-x-0 bottom-0 z-[7]" />
 
-      <div className="relative z-10 mx-auto flex min-h-[100dvh] w-full max-w-[470px] flex-col px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))]">
+      <div className="new-reservation-content relative z-10 mx-auto flex h-full w-full max-w-[470px] flex-col px-5 pt-[max(.7rem,env(safe-area-inset-top))]">
         <button aria-label="Voltar" className="landing-reveal landing-reveal-brand flex min-h-11 w-fit items-center gap-2 text-base font-bold text-[#D7DEE7] transition hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#8FFF3C]" onClick={() => router.back()} type="button"><ArrowLeftIcon /> Voltar</button>
 
         <header className="landing-reveal landing-reveal-one mt-4">
@@ -118,7 +119,7 @@ function SearchContent() {
         <section className="landing-reveal landing-reveal-two mt-7">
           <h2 className="text-[1.7rem] font-extrabold tracking-[-.045em]">O que vamos jogar?</h2>
           <p className="mt-1 max-w-[310px] text-[15px] leading-5 text-[#9EACBA]">Escolha sua modalidade e encontre arenas incríveis.</p>
-          <div className="search-orbit-stage relative mt-2 h-[340px] w-full overflow-hidden" aria-label="Seletor de modalidade">
+          <div className="new-reservation-orbit search-orbit-stage relative mt-1 w-full overflow-hidden" aria-label="Seletor de modalidade">
             <div aria-hidden="true" className="search-orbit-haze absolute inset-x-[10%] top-[28%]" />
             <div aria-hidden="true" className="search-orbit-spotlight absolute left-1/2 top-1/2" />
             <OrbitPaths />

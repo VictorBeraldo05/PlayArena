@@ -11,7 +11,7 @@ export default function IndexPage() {
   function start() {
     if (starting) return;
     setStarting(true);
-    router.push('/buscar');
+    router.push('/nova-reserva');
   }
 
   return <main className="landing-night relative min-h-[100dvh] overflow-hidden bg-[#080D14] text-white">

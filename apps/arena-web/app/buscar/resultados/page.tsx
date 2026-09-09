@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 
 import { ArenaAvailabilityGroup, ArenaResultCard, AvailabilityOption } from '../../../components/arena-result-card';
 import { PublicBottomNavigation } from '../../../components/public-bottom-navigation';
-import { useAuth } from '../../../components/use-auth';
+import { usePlayerBottomNavigation } from '../../../components/player-bottom-nav';
 import { formatDateBR, todayInSaoPaulo } from '../../../lib/format';
 
 function groupByArena(options: AvailabilityOption[]): ArenaAvailabilityGroup[] {
@@ -25,7 +25,7 @@ function ResultSkeleton() {
 function ResultsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { session } = useAuth();
+  const showPlayerNavigation = usePlayerBottomNavigation();
   const city = searchParams.get('city') ?? '';
   const sport = searchParams.get('sport') ?? '';
   const day = searchParams.get('day') ?? searchParams.get('date') ?? '';
@@ -33,7 +33,6 @@ function ResultsPage() {
   const [items, setItems] = useState<AvailabilityOption[] | null>(null);
   const [error, setError] = useState(false);
   const [reloadVersion, setReloadVersion] = useState(0);
-  const returnTo = `/buscar/resultados?${new URLSearchParams({ city, sport, day, time }).toString()}`;
   const backToSearch = `/buscar/disponibilidade?${new URLSearchParams({ city, sport }).toString()}`;
 
   useEffect(() => {
@@ -72,7 +71,7 @@ function ResultsPage() {
 
   const groups = items ? groupByArena(items) : [];
   const dateLabel = day === todayInSaoPaulo() ? 'Hoje' : formatDateBR(day).slice(0, 5);
-  return <main className="min-h-[100dvh] bg-[#080D14] pb-24 text-white"><div className="mx-auto w-full max-w-[640px] px-4 pb-6 pt-5 sm:px-5"><header className="grid grid-cols-[44px_1fr_44px] items-center"><button aria-label="Voltar para escolher horário" className="grid min-h-11 place-items-center rounded-xl text-2xl text-[#9DA7B3]" onClick={() => router.push(backToSearch)} type="button">‹</button><div><h1 className="text-center text-xl font-black tracking-tight">Arenas disponíveis</h1><p className="mt-2 text-center text-sm font-medium text-[#9DA7B3]">{sport} · {dateLabel} · {time}</p></div><span /></header><section aria-label="Controles de resultados" className="mt-6 flex items-center justify-between gap-3"><button className="flex min-h-12 items-center gap-2 rounded-2xl border border-white/10 bg-[#18212D] px-4 text-sm font-bold text-white" type="button">Mais perto <span className="text-[#9DA7B3]">⌄</span></button><button className="flex min-h-12 items-center gap-2 rounded-2xl border border-white/10 px-4 text-sm font-bold text-white" type="button"><span aria-hidden="true">☷</span> Filtros</button></section><section aria-live="polite" className="mt-5 space-y-4">{items === null && !error ? <><ResultSkeleton /><ResultSkeleton /></> : null}{error ? <div className="rounded-[20px] border border-white/10 bg-[#111923] p-6 text-center"><h2 className="text-lg font-black">Não foi possível carregar as arenas.</h2><button className="mt-4 min-h-12 rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14]" onClick={() => setReloadVersion((version) => version + 1)} type="button">Tentar novamente</button></div> : null}{items && groups.length === 0 ? <div className="rounded-[20px] border border-white/10 bg-[#111923] p-6 text-center"><h2 className="text-xl font-black">Nenhum campo disponível</h2><p className="mt-2 text-sm text-[#9DA7B3]">Não encontramos campos para esse horário.</p><button className="mt-5 min-h-12 rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14]" onClick={() => router.push(backToSearch)} type="button">Escolher outro horário</button></div> : null}{groups.map((group) => <ArenaResultCard group={group} key={group.id} onReserve={reserve} sportName={sport} />)}</section></div><PublicBottomNavigation isAuthenticated={Boolean(session)} returnTo={returnTo} /></main>;
+  return <main className={`min-h-[100dvh] bg-[#080D14] text-white ${showPlayerNavigation ? 'pb-24' : 'pb-[env(safe-area-inset-bottom)]'}`}><div className="mx-auto w-full max-w-[640px] px-4 pb-6 pt-5 sm:px-5"><header className="grid grid-cols-[44px_1fr_44px] items-center"><button aria-label="Voltar para escolher horário" className="grid min-h-11 place-items-center rounded-xl text-2xl text-[#9DA7B3]" onClick={() => router.push(backToSearch)} type="button">‹</button><div><h1 className="text-center text-xl font-black tracking-tight">Arenas disponíveis</h1><p className="mt-2 text-center text-sm font-medium text-[#9DA7B3]">{sport} · {dateLabel} · {time}</p></div><span /></header><section aria-label="Controles de resultados" className="mt-6 flex items-center justify-between gap-3"><button className="flex min-h-12 items-center gap-2 rounded-2xl border border-white/10 bg-[#18212D] px-4 text-sm font-bold text-white" type="button">Mais perto <span className="text-[#9DA7B3]">⌄</span></button><button className="flex min-h-12 items-center gap-2 rounded-2xl border border-white/10 px-4 text-sm font-bold text-white" type="button"><span aria-hidden="true">☷</span> Filtros</button></section><section aria-live="polite" className="mt-5 space-y-4">{items === null && !error ? <><ResultSkeleton /><ResultSkeleton /></> : null}{error ? <div className="rounded-[20px] border border-white/10 bg-[#111923] p-6 text-center"><h2 className="text-lg font-black">Não foi possível carregar as arenas.</h2><button className="mt-4 min-h-12 rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14]" onClick={() => setReloadVersion((version) => version + 1)} type="button">Tentar novamente</button></div> : null}{items && groups.length === 0 ? <div className="rounded-[20px] border border-white/10 bg-[#111923] p-6 text-center"><h2 className="text-xl font-black">Nenhum campo disponível</h2><p className="mt-2 text-sm text-[#9DA7B3]">Não encontramos campos para esse horário.</p><button className="mt-5 min-h-12 rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14]" onClick={() => router.push(backToSearch)} type="button">Escolher outro horário</button></div> : null}{groups.map((group) => <ArenaResultCard group={group} key={group.id} onReserve={reserve} sportName={sport} />)}</section></div><PublicBottomNavigation /></main>;
 }
 
 export default function Page() {

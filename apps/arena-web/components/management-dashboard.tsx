@@ -74,10 +74,13 @@ export function ManagementDashboard() {
 
     <section aria-labelledby="today-heading" className="overflow-hidden rounded-[24px] bg-[#111923] px-5 py-5 shadow-[0_18px_40px_rgba(0,0,0,0.18)]">
       <div className="flex items-baseline justify-between"><h2 className="text-xs font-extrabold uppercase tracking-[0.18em] text-[#9DA7B3]" id="today-heading">Hoje</h2><span className="h-2 w-2 rounded-full bg-[#8FFF3C]" title="Resumo atualizado" /></div>
-      <div className="mt-6 grid grid-cols-3 divide-x divide-white/10">
-        <Metric loading={isLoading} label={summary?.reservations_today === 1 ? 'reserva' : 'reservas'} value={reservationsToday} />
-        <Metric loading={isLoading} label="ocupação" value={occupancyToday} />
-        <Metric loading={isLoading} label="via PlayArena" value={revenueToday} />
+      <div className="mt-6 grid grid-cols-2 divide-x divide-white/10">
+        <TopMetric loading={isLoading} label={summary?.reservations_today === 1 ? 'reserva' : 'reservas'} value={reservationsToday} />
+        <TopMetric loading={isLoading} label="ocupação" value={occupancyToday} />
+      </div>
+      <div className="mt-5 min-w-0">
+        <strong className={`block whitespace-nowrap text-[clamp(1.125rem,6vw,1.5rem)] font-extrabold tabular-nums tracking-[-0.04em] text-white ${isLoading ? 'animate-pulse' : ''}`}>{revenueToday}</strong>
+        <span className="mt-1 block text-xs text-[#9DA7B3]">via PlayArena</span>
       </div>
       <p className="mt-5 border-t border-white/10 pt-4 text-sm text-[#9DA7B3]">{summary ? `${summary.reservations_week} ${summary.reservations_week === 1 ? 'reserva esta semana' : 'reservas esta semana'}` : 'Resumo semanal indisponível'}</p>
     </section>
@@ -95,8 +98,8 @@ export function ManagementDashboard() {
   </div>;
 }
 
-function Metric({ label, loading, value }: { label: string; loading: boolean; value: string | number }) {
-  return <div className="min-w-0 px-3 first:pl-0 last:pr-0"><strong className={`block truncate text-2xl font-bold tracking-[-0.05em] text-white ${loading ? 'animate-pulse' : ''}`}>{value}</strong><span className="mt-1 block text-xs leading-4 text-[#9DA7B3]">{label}</span></div>;
+function TopMetric({ label, loading, value }: { label: string; loading: boolean; value: string | number }) {
+  return <div className="min-w-0 px-3 first:pl-0 last:pr-0"><strong className={`block text-2xl font-bold tracking-[-0.05em] text-white ${loading ? 'animate-pulse' : ''}`}>{value}</strong><span className="mt-1 block text-xs leading-4 text-[#9DA7B3]">{label}</span></div>;
 }
 
 function isArenaOpenNow(hours: OpeningHour[]) {
