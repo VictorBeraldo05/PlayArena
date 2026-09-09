@@ -7,6 +7,7 @@ import { formatCurrencyBRL } from '../lib/format';
 import { PlayerBottomNav, usePlayerBottomNavigation } from './player-bottom-nav';
 import { ArenaMedia } from './arena-media';
 import { useAuth } from './use-auth';
+import { usePageReadyResource } from '../providers/page-ready-provider';
 
 type Sport = { id: number; name: string; slug: string };
 type Arena = { id: string; name: string; city: string; description: string | null; logo_path?: string | null; court_count: number; sports: string[]; price_from: number | string | null };
@@ -22,6 +23,7 @@ export function PlayerDiscoveryHome() {
   const [arenasError, setArenasError] = useState('');
   const [sportsError, setSportsError] = useState('');
   const city = 'Piracicaba';
+  usePageReadyResource('discovery-data', !loading);
 
   async function loadDiscovery() {
     setLoading(true);

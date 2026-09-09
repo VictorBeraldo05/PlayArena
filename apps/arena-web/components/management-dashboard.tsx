@@ -8,6 +8,7 @@ import { apiRequest } from '../lib/api';
 import { getArenaLogoUrl } from '../lib/arena-logo';
 import { BRAZIL_TIME_ZONE, formatCurrencyBRL, formatTimeBR, reservationStatusLabel } from '../lib/format';
 import { useAuth } from './use-auth';
+import { usePageReadyResource } from '../providers/page-ready-provider';
 
 type Summary = {
   reservations_today: number;
@@ -32,6 +33,7 @@ export function ManagementDashboard() {
   const [arenaOpen, setArenaOpen] = useState<boolean | null>(null);
   const arenaName = ownedArenas.length === 1 ? ownedArenas[0].name : 'Suas arenas';
   const primaryArena = ownedArenas[0];
+  usePageReadyResource('owner-dashboard', loadState !== 'loading');
 
   useEffect(() => {
     if (!session?.access_token) return;

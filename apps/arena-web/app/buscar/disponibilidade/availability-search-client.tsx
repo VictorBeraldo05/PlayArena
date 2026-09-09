@@ -1,10 +1,14 @@
 'use client';
 
+/* The selected sport swaps the critical hero asset before its route reveal. */
+/* eslint-disable react-hooks/set-state-in-effect */
+
 import Image from 'next/image';
 import { FormEvent, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { PlayerBottomNav, usePlayerBottomNavigation } from '../../../components/player-bottom-nav';
 import { BRAZIL_TIME_ZONE, todayInSaoPaulo } from '../../../lib/format';
+import { usePageReadyResource } from '../../../providers/page-ready-provider';
 
 const DEFAULT_TIMES = ['18:00', '19:00', '20:00', '21:00', '22:00', '23:00'];
 
@@ -41,8 +45,11 @@ export function AvailabilitySearchClient() {
   const [day, setDay] = useState(today);
   const [time, setTime] = useState('20:00');
   const [heroImageFailed, setHeroImageFailed] = useState(false);
+  const [heroImageReady, setHeroImageReady] = useState(!visual.image);
   const times = visual.quickTimes ?? DEFAULT_TIMES;
   const period = periodForTime(time);
+  useEffect(() => { setHeroImageReady(!visual.image); setHeroImageFailed(false); }, [visual.image]);
+  usePageReadyResource('schedule-hero', heroImageReady || heroImageFailed);
 
   function search(event: FormEvent) {
     event.preventDefault();
@@ -67,7 +74,7 @@ export function AvailabilitySearchClient() {
         <form className="schedule-reveal schedule-reveal-two mt-5" onSubmit={search}>
           <DateNavigator minDate={today} onSelect={setDay} selectedDate={day}/>
 
-          <SportHero imageFailed={heroImageFailed} key={sport} onImageError={() => setHeroImageFailed(true)} visual={visual} />
+          <SportHero imageFailed={heroImageFailed} key={sport} onImageError={() => setHeroImageFailed(true)} onImageLoad={() => setHeroImageReady(true)} visual={visual} />
 
           <section className="mt-4" aria-label="Escolha o horário">
             <div className="flex items-center justify-between"><p className="text-[10px] font-black uppercase tracking-[.2em] text-[#AAB7C5]">Horário do jogo</p><div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.14em] text-[#D4DCE5]"><PeriodIcon /><span>{period}</span></div></div>
@@ -89,9 +96,9 @@ export function AvailabilitySearchClient() {
   );
 }
 
-function SportHero({ visual, imageFailed, onImageError }: { visual: ScheduleVisual; imageFailed: boolean; onImageError: () => void }) {
+function SportHero({ visual, imageFailed, onImageError, onImageLoad }: { visual: ScheduleVisual; imageFailed: boolean; onImageError: () => void; onImageLoad: () => void }) {
   return <section className={`schedule-sport-hero schedule-environment-${visual.environment} relative mt-4 h-40 overflow-hidden rounded-[20px] border border-white/10`}>
-    {visual.image && !imageFailed ? <Image alt={`${visual.label} em arena esportiva`} className="schedule-hero-image absolute inset-0 h-full w-full object-cover" fill onError={onImageError} priority sizes="(max-width: 520px) 100vw, 520px" src={visual.image} style={{ objectPosition: visual.objectPosition ?? 'center' }} /> : null}
+    {visual.image && !imageFailed ? <Image alt={`${visual.label} em arena esportiva`} className="schedule-hero-image absolute inset-0 h-full w-full object-cover" fill onError={onImageError} onLoad={onImageLoad} priority sizes="(max-width: 520px) 100vw, 520px" src={visual.image} style={{ objectPosition: visual.objectPosition ?? 'center' }} /> : null}
     <div aria-hidden="true" className="schedule-hero-fallback absolute inset-0" />
     <div aria-hidden="true" className="schedule-hero-overlay absolute inset-0" />
     <div className="absolute inset-x-0 bottom-0 z-[3] p-4"><p className="text-[13px] font-black uppercase tracking-[.13em] text-white">{visual.label}</p><p className="mt-0.5 text-[11px] text-[#D1DCE7]">{visual.subtitle}</p></div>

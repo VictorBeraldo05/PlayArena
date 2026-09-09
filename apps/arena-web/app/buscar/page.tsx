@@ -5,6 +5,7 @@ import { Suspense, useEffect, useMemo, useState, type CSSProperties } from 'reac
 import { useRouter, useSearchParams } from 'next/navigation';
 import { PlayerBottomNav, usePlayerBottomNavigation } from '../../components/player-bottom-nav';
 import { PlayerDiscoveryHome } from '../../components/player-discovery-home';
+import { PageReadyGate } from '../../providers/page-ready-provider';
 
 type Sport = { id: number; name: string; slug: string };
 type VisualSpec = { label: string; detail: string; accent: string; image?: string };
@@ -93,6 +94,7 @@ function SearchContent() {
 
   return (
     <main className={`new-reservation-page search-orbit landing-night relative h-[100dvh] min-h-[100dvh] max-h-[100dvh] overflow-hidden bg-[#080D14] text-white ${showPlayerNavigation ? 'pb-[calc(4rem+env(safe-area-inset-bottom))]' : 'pb-[env(safe-area-inset-bottom)]'}`}>
+      <PageReadyGate ready={!loading} resourceId="sports" />
       <Image alt="Arena noturna com gramado iluminado" className="landing-night-image absolute inset-0 z-0 object-cover object-center opacity-40" fill priority sizes="100vw" src="/img/playarena-hero.png" />
       <div aria-hidden="true" className="landing-night-haze landing-night-haze-left absolute z-[2]" />
       <div aria-hidden="true" className="landing-night-haze landing-night-haze-right absolute z-[2]" />

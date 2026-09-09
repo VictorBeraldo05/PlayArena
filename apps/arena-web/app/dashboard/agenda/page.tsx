@@ -8,6 +8,7 @@ import { TimeField } from '../../../components/time-field';
 import { useAuth } from '../../../components/use-auth';
 import { ApiRequestError, apiRequest, apiRequestWithMeta } from '../../../lib/api';
 import { BRAZIL_TIME_ZONE, formatCurrencyBRL, formatTimeBR, parseCurrencyBRL, todayInSaoPaulo } from '../../../lib/format';
+import { usePageReadyResource } from '../../../providers/page-ready-provider';
 
 type Court = { id: string; name: string };
 type Slot = { court_id: string; court_name: string; start_at: string; end_at: string; reservation_id: string | null; customer_name: string | null; price: string | null; status: string | null; source: string | null; blocked_slot_id: string | null; blocked_reason: string | null };
@@ -19,6 +20,7 @@ const visualDate = new Intl.DateTimeFormat('pt-BR', { weekday: 'short', day: '2-
 export default function AgendaPage() {
   const { session, ownedArenas } = useAuth(); const token = session?.access_token; const arenaId = ownedArenas[0]?.id;
   const [day, setDay] = useState(todayInSaoPaulo); const [court, setCourt] = useState(''); const [courts, setCourts] = useState<Court[]>([]); const [slots, setSlots] = useState<Slot[] | null>(null); const [isAgendaLoading, setIsAgendaLoading] = useState(true); const [agendaError, setAgendaError] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState(false); const [reservationAction, setReservationAction] = useState<ReservationAction | null>(null); const [mode, setMode] = useState<Mode>(null); const [menuOpen, setMenuOpen] = useState(false); const [start, setStart] = useState('18:00'); const [end, setEnd] = useState('19:00'); const lock = useRef(false);
+  usePageReadyResource('owner-agenda', !isAgendaLoading);
 
   async function refresh(accessToken = token) { if (!accessToken) { startTransition(() => setIsAgendaLoading(false)); return; } const params = new URLSearchParams({ day }); if (court) params.set('court_id', court); const path = `/owner/agenda?${params.toString()}`; startTransition(() => { setIsAgendaLoading(true); setAgendaError(''); }); try { const { data } = await apiRequestWithMeta<Slot[]>(path, accessToken); startTransition(() => setSlots(data)); } catch (error) { const status = error instanceof ApiRequestError ? error.status : undefined; if (process.env.NODE_ENV === 'development') console.warn('[OWNER_AGENDA]', { path, status }); startTransition(() => { setSlots([]); setAgendaError('Não foi possível carregar a agenda.'); }); } finally { startTransition(() => setIsAgendaLoading(false)); } }
 

@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { ArenaMedia } from '../../../../components/arena-media';
 import { PlayerBottomNav, usePlayerBottomNavigation } from '../../../../components/player-bottom-nav';
 import { formatCurrencyBRL } from '../../../../lib/format';
+import { usePageReadyResource } from '../../../../providers/page-ready-provider';
 
 type Court = { id: string; name: string; default_duration_minutes: number; sports: string[]; price_from: string | null };
 type OpeningHour = { weekday: number; open_time: string; close_time: string };
@@ -21,6 +22,7 @@ export default function ArenaDetailPage() {
   const [arena, setArena] = useState<Arena | null>(null);
   const [error, setError] = useState('');
   const [showWeek, setShowWeek] = useState(false);
+  usePageReadyResource('arena-detail', Boolean(arena || error));
 
   const loadArena = useCallback(() => {
     setError('');
@@ -42,7 +44,7 @@ export default function ArenaDetailPage() {
 
   return <main className={`min-h-[100dvh] bg-[#080D14] text-white ${showPlayerNavigation ? 'pb-44' : 'pb-24'}`}>
     <section className="relative h-[252px] overflow-hidden rounded-b-[28px] bg-[#111923]">
-      <ArenaMedia arena={arena} className="absolute inset-0" priority sport={primarySport} variant="hero" />
+      <ArenaMedia arena={arena} className="absolute inset-0" critical priority sport={primarySport} variant="hero" />
       <div aria-hidden="true" className="absolute inset-0 bg-gradient-to-b from-[#080D14]/45 via-transparent to-[#080D14]/95" />
       <button aria-label="Voltar" className="absolute left-4 top-[max(1rem,env(safe-area-inset-top))] grid h-11 w-11 place-items-center rounded-full bg-[#080D14]/65 text-xl backdrop-blur" onClick={() => router.back()} type="button">←</button>
     </section>

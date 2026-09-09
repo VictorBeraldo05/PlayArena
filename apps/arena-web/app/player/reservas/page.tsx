@@ -6,6 +6,7 @@ import { PlayerBottomNav as PlayerNavigation } from '../../../components/player-
 import { useAuth } from '../../../components/use-auth';
 import { apiRequest } from '../../../lib/api';
 import { BRAZIL_TIME_ZONE, formatCurrencyBRL, formatReservationDateParts, formatReservationTimeRange, formatTimeBR } from '../../../lib/format';
+import { usePageReadyResource } from '../../../providers/page-ready-provider';
 
 type Reservation = { id: string; arena_name: string; court_name: string; start_at: string; end_at: string; price: string; status: string };
 type Tab = 'upcoming' | 'history';
@@ -20,6 +21,7 @@ export default function PlayerReservationsPage() {
   const [tab, setTab] = useState<Tab>('upcoming');
   const [selectedReservation, setSelectedReservation] = useState<Reservation | null>(null);
   const [now] = useState(() => Date.now());
+  usePageReadyResource('player-reservations', items !== null || Boolean(error));
 
   useEffect(() => {
     if (!token) return;

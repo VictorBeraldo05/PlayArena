@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { Space_Grotesk } from 'next/font/google';
 import './globals.css';
 import { AuthProvider } from '../providers/auth-provider';
+import { PageReadyProvider } from '../providers/page-ready-provider';
 
 const spaceGrotesk = Space_Grotesk({
   subsets: ['latin'],
@@ -16,7 +17,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="pt-BR">
       <body className={spaceGrotesk.className}>
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider><PageReadyProvider>{children}</PageReadyProvider></AuthProvider>
       </body>
     </html>
   );
