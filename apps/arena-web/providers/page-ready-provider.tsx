@@ -7,6 +7,7 @@ import { createContext, useCallback, useContext, useEffect, useId, useMemo, useR
 import { usePathname } from 'next/navigation';
 
 import { useAuth } from '../components/use-auth';
+import { trackEvent } from '../lib/analytics';
 
 type PageReadyContextValue = { register: (id: string) => () => void; resolve: (id: string) => void };
 type LoaderVariant = 'initial' | 'navigation';
@@ -59,6 +60,7 @@ export function PageReadyProvider({ children }: { children: React.ReactNode }) {
   }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { evaluate(); }, [authLoading, revision]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { trackEvent('app_opened', { dedupeKey: 'app-opened' }); }, []);
   useEffect(() => {
     function beginLinkedNavigation(event: MouseEvent) {
       if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;

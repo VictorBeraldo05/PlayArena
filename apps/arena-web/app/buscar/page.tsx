@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { PlayerBottomNav, usePlayerBottomNavigation } from '../../components/player-bottom-nav';
 import { PlayerDiscoveryHome } from '../../components/player-discovery-home';
 import { PageReadyGate } from '../../providers/page-ready-provider';
+import { trackEvent } from '../../lib/analytics';
 
 type Sport = { id: number; name: string; slug: string };
 type VisualSpec = { label: string; detail: string; accent: string; image?: string };
@@ -89,6 +90,7 @@ function SearchContent() {
 
   function continueFlow() {
     if (!sport || loading) return;
+    trackEvent('search_started', { properties: { city, sport, source: 'new_reservation' }, dedupeKey: `search-started:${city}:${sport}` });
     router.push(`/buscar/disponibilidade?city=${encodeURIComponent(city)}&sport=${encodeURIComponent(sport)}`);
   }
 

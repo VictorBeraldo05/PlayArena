@@ -8,6 +8,7 @@ import { ArenaMedia } from '../../../../components/arena-media';
 import { PlayerBottomNav, usePlayerBottomNavigation } from '../../../../components/player-bottom-nav';
 import { formatCurrencyBRL } from '../../../../lib/format';
 import { usePageReadyResource } from '../../../../providers/page-ready-provider';
+import { trackEvent } from '../../../../lib/analytics';
 
 type Court = { id: string; name: string; default_duration_minutes: number; sports: string[]; price_from: string | null };
 type OpeningHour = { weekday: number; open_time: string; close_time: string };
@@ -29,7 +30,7 @@ export default function ArenaDetailPage() {
     const base = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
     void fetch(`${base}/arenas/${id}`)
       .then((response) => response.ok ? response.json() as Promise<Arena> : Promise.reject())
-      .then(setArena)
+      .then((result) => { setArena(result); trackEvent('arena_viewed', { arenaId: id, properties: { city: result.city }, dedupeKey: `arena-viewed:${id}` }); })
       .catch(() => setError('Não foi possível carregar esta arena.'));
   }, [id]);
 

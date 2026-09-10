@@ -9,6 +9,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { PlayerBottomNav, usePlayerBottomNavigation } from '../../../components/player-bottom-nav';
 import { BRAZIL_TIME_ZONE, todayInSaoPaulo } from '../../../lib/format';
 import { usePageReadyResource } from '../../../providers/page-ready-provider';
+import { trackEvent } from '../../../lib/analytics';
 
 const DEFAULT_TIMES = ['18:00', '19:00', '20:00', '21:00', '22:00', '23:00'];
 
@@ -53,6 +54,7 @@ export function AvailabilitySearchClient() {
 
   function search(event: FormEvent) {
     event.preventDefault();
+    trackEvent('availability_searched', { properties: { city, sport, date: day, time, source: 'new_reservation' }, dedupeKey: `availability:${city}:${sport}:${day}:${time}` });
     router.push(`/buscar/resultados?${new URLSearchParams({ city, sport, day, time }).toString()}`);
   }
 

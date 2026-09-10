@@ -41,7 +41,7 @@ export function AuthForm() {
   useEffect(() => {
     if (!isLoading && session) {
       if (profile?.role === 'player') {
-        router.replace(safeReturnTo ?? '/player');
+        router.replace(safeReturnTo ?? '/buscar');
         return;
       }
       if (profile?.role === 'arena_owner' && ownedArenas.length === 0) {
@@ -76,7 +76,6 @@ export function AuthForm() {
     try {
       if (mode === 'login') {
         success = await signIn(email.trim(), password);
-        if (success) router.replace(safeReturnTo ?? '/dashboard');
       } else {
         success = await signUp({ fullName: fullName.trim(), phone: phone.trim(), email: email.trim(), password });
         if (success) setInfoMessage('Conta criada. Verifique seu e-mail para continuar.');

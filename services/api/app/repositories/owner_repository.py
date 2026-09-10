@@ -385,7 +385,7 @@ def create_manual_reservation(user_id: str, data: dict[str, Any]) -> dict[str, A
     try:
         with session_factory.begin() as session:
             court = _owned_court(session, user_id, data["court_id"])
-            return dict(session.execute(text("""insert into public.reservations(arena_id,court_id,customer_name,customer_phone,start_at,end_at,price,status,source) values(:arena_id,:court_id,:customer_name,:customer_phone,:start_at,:end_at,:price,'confirmed','arena_manual') returning id,arena_id,court_id,customer_name,customer_phone,start_at,end_at,price,status,source"""), {**data,"arena_id":court["arena_id"]}).mappings().one())
+            return dict(session.execute(text("""insert into public.reservations(arena_id,court_id,customer_name,customer_phone,start_at,end_at,price,status,source,confirmed_at) values(:arena_id,:court_id,:customer_name,:customer_phone,:start_at,:end_at,:price,'confirmed','arena_manual',timezone('utc', now())) returning id,arena_id,court_id,customer_name,customer_phone,start_at,end_at,price,status,source"""), {**data,"arena_id":court["arena_id"]}).mappings().one())
     except IntegrityError as exc:
         raise ReservationConflictError from exc
 
@@ -395,7 +395,10 @@ def update_reservation_status(user_id: str, reservation_id: UUID, next_status: s
     try:
         with session_factory.begin() as session:
             _owned_reservation(session, user_id, reservation_id)
-            return dict(session.execute(text("update public.reservations set status=:status where id=:reservation_id returning id,status"), {"status":next_status,"reservation_id":reservation_id}).mappings().one())
+            return dict(session.execute(text("""update public.reservations set status=:status,
+              confirmed_at=case when :status='confirmed' then coalesce(confirmed_at, timezone('utc', now())) else confirmed_at end,
+              cancelled_at=case when :status='cancelled' then coalesce(cancelled_at, timezone('utc', now())) else cancelled_at end
+              where id=:reservation_id returning id,status"""), {"status":next_status,"reservation_id":reservation_id}).mappings().one())
     except IntegrityError as exc:
         raise ReservationConflictError from exc
 

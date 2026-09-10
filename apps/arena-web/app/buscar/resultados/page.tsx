@@ -8,6 +8,7 @@ import { PublicBottomNavigation } from '../../../components/public-bottom-naviga
 import { usePlayerBottomNavigation } from '../../../components/player-bottom-nav';
 import { formatDateBR, todayInSaoPaulo } from '../../../lib/format';
 import { PageReadyGate } from '../../../providers/page-ready-provider';
+import { trackEvent } from '../../../lib/analytics';
 
 function groupByArena(options: AvailabilityOption[]): ArenaAvailabilityGroup[] {
   const groups = new Map<string, ArenaAvailabilityGroup>();
@@ -47,7 +48,7 @@ function ResultsPage() {
           const response = await fetch(`${base}/availability?city=${encodeURIComponent(city)}&sport=${encodeURIComponent(sport)}&start_at=${encodeURIComponent(`${day}T${time}:00`)}`);
           if (!response.ok) throw new Error('Availability request failed');
           const responseItems = await response.json() as AvailabilityOption[];
-          if (!cancelled) setItems(responseItems);
+          if (!cancelled) { setItems(responseItems); trackEvent(responseItems.length ? 'availability_results_viewed' : 'availability_no_results', { properties: { city, sport, date: day, time, results_count: responseItems.length }, dedupeKey: `availability-result:${city}:${sport}:${day}:${time}` }); }
         } catch {
           if (!cancelled) setError(true);
         }
@@ -57,6 +58,7 @@ function ResultsPage() {
   }, [city, day, reloadVersion, sport, time]);
 
   function reserve(option: AvailabilityOption) {
+    trackEvent('reservation_started', { arenaId: option.arena_id, courtId: option.court_id, properties: { sport, start_at: option.start_at }, dedupeKey: `reservation-start:${option.court_id}:${option.start_at}` });
     const params = new URLSearchParams({
       arenaId: option.arena_id,
       arena: option.arena_name,

@@ -7,6 +7,7 @@ import { useAuth } from '../../components/use-auth';
 import { apiRequest } from '../../lib/api';
 import { formatCurrencyBRL, formatReservationDateParts, formatReservationTimeRange, formatTimeBR, todayInSaoPaulo } from '../../lib/format';
 import { usePageReadyResource } from '../../providers/page-ready-provider';
+import { trackEvent } from '../../lib/analytics';
 
 const PENDING_RESERVATION_KEY = 'playarena_pending_reservation';
 const monthNames = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
@@ -43,7 +44,7 @@ function ReservationPage() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!validIntent || isSubmitting || submissionLock.current) return;
-    if (!session) { savePendingIntent(); router.push('/login?returnTo=/reservar'); return; }
+    if (!session) { trackEvent('reservation_login_required', { arenaId: intent.arenaId, courtId: intent.courtId, properties: { sport: intent.sport, start_at: intent.startAt } }); savePendingIntent(); router.push('/login?returnTo=/reservar'); return; }
     if (isLoading || !profile) { setError('Não foi possível carregar seus dados.'); return; }
     if (!profileComplete) { completeProfile(); return; }
     if (profile.role !== 'player') { setError('Esta conta não pode solicitar pré-reserva.'); return; }
