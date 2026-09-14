@@ -9,6 +9,7 @@ As transições existentes são:
 - `pending -> confirmed`: e-mail **Sua reserva foi confirmada ✅**.
 - `pending -> cancelled`: e-mail de recusa. O botão existente **Recusar** usa essa transição; não há status `rejected` no schema.
 - `confirmed -> cancelled`: e-mail **Reserva cancelada**.
+- cancelamento iniciado pelo player (`pending` ou `confirmed`): e-mail **Reserva cancelada**, inclusive para uma pré-reserva ainda pendente. Essa origem não é tratada como recusa da arena.
 
 Reservas manuais não têm `user_id` e não recebem e-mail nesta fase. Owner também não recebe notificações nesta fase.
 

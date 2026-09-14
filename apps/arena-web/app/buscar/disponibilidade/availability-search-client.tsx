@@ -24,6 +24,11 @@ type ScheduleVisual = {
   quickTimes?: string[];
 };
 
+type ArenaScheduleContext = {
+  name: string;
+  courts: { id: string; name: string }[];
+};
+
 // These public URLs intentionally work before the optional schedule assets are added.
 const scheduleSportVisuals: Record<string, ScheduleVisual> = {
   society: { label: 'Society', subtitle: 'Futebol society', image: '/img/sports/schedule/society.jpg', environment: 'field', ambient: 'rgba(70, 162, 61, .24)', secondary: 'rgba(143,255,60,.16)', objectPosition: 'center 60%' },
@@ -39,23 +44,50 @@ export function AvailabilitySearchClient() {
   const router = useRouter();
   const showPlayerNavigation = usePlayerBottomNavigation();
   const params = useSearchParams();
-  const city = params.get('city') ?? 'Piracicaba';
+  const arenaId = params.get('arenaId') ?? '';
+  const courtId = params.get('courtId') ?? '';
+  const city = params.get('city') ?? (arenaId ? '' : 'Piracicaba');
   const sport = params.get('sport') ?? '';
+  const isArenaScoped = Boolean(arenaId);
   const visual = visualForSport(sport);
   const today = useMemo(() => todayInSaoPaulo(), []);
   const [day, setDay] = useState(today);
   const [time, setTime] = useState('20:00');
+  const [arenaContext, setArenaContext] = useState<ArenaScheduleContext | null>(null);
+  const [arenaContextError, setArenaContextError] = useState(false);
   const [heroImageFailed, setHeroImageFailed] = useState(false);
   const [heroImageReady, setHeroImageReady] = useState(!visual.image);
   const times = visual.quickTimes ?? DEFAULT_TIMES;
   const period = periodForTime(time);
   useEffect(() => { setHeroImageReady(!visual.image); setHeroImageFailed(false); }, [visual.image]);
+  useEffect(() => {
+    if (!arenaId) {
+      setArenaContext(null);
+      setArenaContextError(false);
+      return;
+    }
+    let active = true;
+    const base = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+    void fetch(`${base}/arenas/${arenaId}`)
+      .then((response) => response.ok ? response.json() as Promise<ArenaScheduleContext> : Promise.reject())
+      .then((arena) => { if (active) setArenaContext(arena); })
+      .catch(() => { if (active) setArenaContextError(true); });
+    return () => { active = false; };
+  }, [arenaId]);
   usePageReadyResource('schedule-hero', heroImageReady || heroImageFailed);
+  usePageReadyResource('arena-schedule-context', !isArenaScoped || Boolean(arenaContext || arenaContextError));
+
+  const selectedCourt = arenaContext?.courts.find((court) => court.id === courtId) ?? null;
+  const backHref = isArenaScoped ? `/player/arenas/${arenaId}` : `/nova-reserva?${new URLSearchParams({ city, sport }).toString()}`;
 
   function search(event: FormEvent) {
     event.preventDefault();
-    trackEvent('availability_searched', { properties: { city, sport, date: day, time, source: 'new_reservation' }, dedupeKey: `availability:${city}:${sport}:${day}:${time}` });
-    router.push(`/buscar/resultados?${new URLSearchParams({ city, sport, day, time }).toString()}`);
+    const query = new URLSearchParams({ sport, day, time });
+    if (city) query.set('city', city);
+    if (arenaId) query.set('arenaId', arenaId);
+    if (courtId) query.set('courtId', courtId);
+    trackEvent('availability_searched', { arenaId: arenaId || undefined, courtId: courtId || undefined, properties: { city, sport, date: day, time, source: isArenaScoped ? 'arena_detail' : 'new_reservation' }, dedupeKey: `availability:${city}:${sport}:${day}:${time}:${arenaId}:${courtId}` });
+    router.push(`/buscar/resultados?${query.toString()}`);
   }
 
   return (
@@ -65,12 +97,13 @@ export function AvailabilitySearchClient() {
 
       <div className="relative z-10 mx-auto flex min-h-[100dvh] w-full max-w-[520px] flex-col px-5 pb-[max(.75rem,env(safe-area-inset-bottom))] pt-[max(.75rem,env(safe-area-inset-top))] sm:px-6">
         <header className="schedule-reveal flex items-center justify-between">
-          <button aria-label="Voltar para escolher modalidade" className="flex min-h-9 items-center gap-2 text-sm font-bold text-[#D7DEE7] transition hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#8FFF3C]" onClick={() => router.push(`/nova-reserva?${new URLSearchParams({ city, sport }).toString()}`)} type="button"><ArrowLeftIcon /> Voltar</button>
-          <span className="text-xs font-bold uppercase tracking-[.18em] text-[#96A4B3]">2 de 3</span>
+          <button aria-label={isArenaScoped ? 'Voltar para detalhes da arena' : 'Voltar para escolher modalidade'} className="flex min-h-9 items-center gap-2 text-sm font-bold text-[#D7DEE7] transition hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#8FFF3C]" onClick={() => router.push(backHref)} type="button"><ArrowLeftIcon /> Voltar</button>
+          <span className="text-xs font-bold uppercase tracking-[.18em] text-[#96A4B3]">{isArenaScoped ? 'Disponibilidade' : '2 de 3'}</span>
         </header>
 
         <section className="schedule-reveal schedule-reveal-one mt-4">
           <h1 className="text-[clamp(2rem,8.7vw,2.125rem)] font-extrabold leading-[.99] tracking-[-.06em]">Quando a bola<br /><span className="text-[#8FFF3C]">vai rolar?</span></h1>
+          {isArenaScoped ? <p className="mt-3 text-sm font-bold text-[#D4DCE5]">{arenaContext?.name ?? 'Arena selecionada'}{selectedCourt ? <span className="text-[#9DA7B3]"> • {selectedCourt.name}</span> : null}</p> : null}
         </section>
 
         <form className="schedule-reveal schedule-reveal-two mt-5" onSubmit={search}>
@@ -90,7 +123,7 @@ export function AvailabilitySearchClient() {
             <span>{summaryDate(day)}</span><span className="text-white/35">•</span><span>{visual.label}</span><span className="text-white/35">•</span><span className="text-[#8FFF3C]">{time}</span>
           </div>
 
-          <button className="schedule-cta relative mt-3 min-h-14 w-full overflow-hidden rounded-[26px] bg-[#8FFF3C] px-6 text-base font-bold text-[#080D14]" type="submit"><span className="relative z-10 flex items-center justify-center gap-3">Ver arenas disponíveis <span aria-hidden="true" className="schedule-cta-arrow">-&gt;</span></span><i aria-hidden="true" className="schedule-cta-shine absolute inset-y-0 w-1/2" /></button>
+          <button className="schedule-cta relative mt-3 min-h-14 w-full overflow-hidden rounded-[26px] bg-[#8FFF3C] px-6 text-base font-bold text-[#080D14]" type="submit"><span className="relative z-10 flex items-center justify-center gap-3">{isArenaScoped ? 'Ver horários disponíveis' : 'Ver arenas disponíveis'} <span aria-hidden="true" className="schedule-cta-arrow">-&gt;</span></span><i aria-hidden="true" className="schedule-cta-shine absolute inset-y-0 w-1/2" /></button>
         </form>
       </div>
       <PlayerBottomNav />

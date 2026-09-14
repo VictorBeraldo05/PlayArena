@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 AnalyticsEventName = Literal[
     "app_opened", "search_started", "availability_searched", "availability_results_viewed",
-    "availability_no_results", "arena_viewed", "reservation_started", "reservation_login_required",
+    "availability_no_results", "arena_viewed", "arena_schedule_viewed", "reservation_started", "reservation_login_required",
 ]
 
 

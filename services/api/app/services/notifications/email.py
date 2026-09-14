@@ -11,7 +11,7 @@ from uuid import UUID
 
 from app.core.config import settings
 from app.repositories.booking_repository import get_reservation_notification
-from app.services.notifications.templates import ReservationEmailData, RenderedEmail, notification_kind, render_reservation_email
+from app.services.notifications.templates import NotificationKind, ReservationEmailData, RenderedEmail, notification_kind, render_reservation_email
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +62,14 @@ class ReservationNotificationService:
         self.fetch_reservation = fetch_reservation
         self.sender_factory = sender_factory
 
-    def send_status_change(self, reservation_id: UUID, previous_status: str, next_status: str) -> None:
-        kind = notification_kind(previous_status, next_status)
+    def send_status_change(
+        self,
+        reservation_id: UUID,
+        previous_status: str,
+        next_status: str,
+        notification_override: NotificationKind | None = None,
+    ) -> None:
+        kind = notification_override or notification_kind(previous_status, next_status)
         if kind is None:
             logger.info("reservation notification skipped reservation_id=%s reason=unsupported-transition", reservation_id)
             return
@@ -136,5 +142,17 @@ def get_reservation_notification_service() -> ReservationNotificationService:
     )
 
 
-def send_reservation_status_notification(reservation_id: UUID, previous_status: str, next_status: str) -> None:
-    get_reservation_notification_service().send_status_change(reservation_id, previous_status, next_status)
+def send_reservation_status_notification(
+    reservation_id: UUID,
+    previous_status: str,
+    next_status: str,
+    *,
+    cancellation_by_player: bool = False,
+) -> None:
+    notification_override: NotificationKind | None = "cancelled" if cancellation_by_player and next_status == "cancelled" else None
+    get_reservation_notification_service().send_status_change(
+        reservation_id,
+        previous_status,
+        next_status,
+        notification_override=notification_override,
+    )

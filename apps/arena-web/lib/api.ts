@@ -1,5 +1,5 @@
 export class ApiRequestError extends Error {
-  constructor(message: string, readonly status?: number) {
+  constructor(message: string, readonly status?: number, readonly code?: string) {
     super(message);
     this.name = 'ApiRequestError';
   }
@@ -17,8 +17,10 @@ export async function apiRequestWithMeta<T>(path: string, token: string, init: R
   });
 
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { detail?: string } | null;
-    throw new ApiRequestError(body?.detail ?? 'Nao foi possivel concluir esta operacao.', response.status);
+    const body = (await response.json().catch(() => null)) as { detail?: string | { code?: string; message?: string } } | null;
+    const detail = body?.detail;
+    const message = typeof detail === 'string' ? detail : detail?.message ?? 'Nao foi possivel concluir esta operacao.';
+    throw new ApiRequestError(message, response.status, typeof detail === 'string' ? undefined : detail?.code);
   }
 
   if (response.status === 204) {

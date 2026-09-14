@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -6,13 +6,34 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from app.db.session import get_session_factory
+from app.schemas.booking import SAO_PAULO_TIME_ZONE
 
 
 class BookingConflictError(Exception):
     """Raised when PostgreSQL rejects a conflicting active reservation."""
 
 
-def available(city: str, sport: str, start_at: datetime) -> list[dict[str, Any]]:
+class PublicScheduleCourtNotFoundError(Exception):
+    """Raised when a requested court is not an active court of the public arena."""
+
+
+class PlayerReservationNotFoundError(Exception):
+    """Raised without exposing whether another player's reservation exists."""
+
+
+class PlayerReservationStateError(Exception):
+    """Raised when a reservation is not in a player-cancellable status."""
+
+
+class PlayerCancellationWindowClosedError(Exception):
+    """Raised when the 90-minute player cancellation window has passed."""
+
+
+class PlayerReservationCancellationConflictError(Exception):
+    """Raised when the reservation changes while the cancellation is being applied."""
+
+
+def available(city: str | None, sport: str, start_at: datetime, arena_id: UUID | None = None, court_id: UUID | None = None) -> list[dict[str, Any]]:
     """Return courts where the full default-duration slot is bookable.
 
     A pricing rule covers the whole slot. The narrowest matching range wins;
@@ -28,8 +49,11 @@ def available(city: str, sport: str, start_at: datetime) -> list[dict[str, Any]]
               from public.arenas a join public.courts c on c.arena_id = a.id
               join public.court_sports cs on cs.court_id = c.id
               join public.sports s on s.id = cs.sport_id
-              where a.active and c.active and lower(a.city) = lower(:city)
+              where a.active and c.active
+                and (cast(:city as text) is null or lower(a.city) = lower(cast(:city as text)))
                 and (lower(s.name) = lower(:sport) or lower(s.slug) = lower(:sport))
+                and (cast(:arena_id as uuid) is null or a.id = cast(:arena_id as uuid))
+                and (cast(:court_id as uuid) is null or c.id = cast(:court_id as uuid))
             )
             select ca.*, (
               select pr.price from public.pricing_rules pr
@@ -51,7 +75,7 @@ def available(city: str, sport: str, start_at: datetime) -> list[dict[str, Any]]
                 and r.status in ('pending', 'confirmed')
                 and r.reservation_window && tstzrange(ca.start_at, ca.end_at, '[)')
             )
-        """), {"city": city, "sport": sport, "start_at": start_at}).mappings()
+        """), {"city": city, "sport": sport, "start_at": start_at, "arena_id": arena_id, "court_id": court_id}).mappings()
         return [dict(row) for row in rows if row["price"] is not None]
 
 
@@ -103,6 +127,93 @@ def public_arena(arena_id: UUID) -> dict[str, Any] | None:
             where arena_id = :arena_id and active order by weekday, open_time
         """), {"arena_id": arena_id}).mappings()
         return {**dict(arena), "courts": [dict(row) for row in courts], "opening_hours": [dict(row) for row in hours]}
+
+
+def public_arena_schedule(arena_id: UUID, day: date, court_id: UUID | None = None) -> dict[str, Any] | None:
+    """Return a public, privacy-safe schedule with server-resolved availability and pricing."""
+    factory = get_session_factory()
+    with factory() as session:
+        arena = session.execute(text("""
+            select id from public.arenas where id = :arena_id and active
+        """), {"arena_id": arena_id}).mappings().one_or_none()
+        if arena is None:
+            return None
+
+        courts = [dict(row) for row in session.execute(text("""
+            select c.id, c.name, c.default_duration_minutes,
+                   coalesce(array_agg(distinct s.name) filter (where s.name is not null), '{}') as sports
+            from public.courts c
+            left join public.court_sports cs on cs.court_id = c.id
+            left join public.sports s on s.id = cs.sport_id
+            where c.arena_id = :arena_id and c.active
+              and (cast(:court_id as uuid) is null or c.id = cast(:court_id as uuid))
+            group by c.id order by c.name
+        """), {"arena_id": arena_id, "court_id": court_id}).mappings()]
+        if court_id is not None and not courts:
+            raise PublicScheduleCourtNotFoundError
+
+        is_open = session.execute(text("""
+            select exists(
+              select 1 from public.opening_hours oh
+              where oh.arena_id = :arena_id and oh.active
+                and oh.weekday = extract(dow from cast(:day as date))::smallint
+            )
+        """), {"arena_id": arena_id, "day": day}).scalar_one()
+        if not courts or not is_open:
+            return {"arena_id": arena["id"], "day": day, "is_open": is_open, "courts": courts, "slots": []}
+
+        slots = session.execute(text("""
+            with selected_courts as (
+              select c.id as court_id, c.default_duration_minutes
+              from public.courts c
+              where c.arena_id = :arena_id and c.active
+                and (cast(:court_id as uuid) is null or c.id = cast(:court_id as uuid))
+            ), time_slots as (
+              select c.court_id, c.default_duration_minutes as duration_minutes,
+                     series.start_at, series.start_at + make_interval(mins => c.default_duration_minutes) as end_at
+              from selected_courts c
+              join public.opening_hours oh on oh.arena_id = :arena_id and oh.active
+                and oh.weekday = extract(dow from cast(:day as date))::smallint
+              cross join lateral generate_series(
+                timezone('America/Sao_Paulo', cast(:day as date) + oh.open_time),
+                timezone('America/Sao_Paulo', cast(:day as date) + oh.close_time - make_interval(mins => c.default_duration_minutes)),
+                make_interval(mins => c.default_duration_minutes)
+              ) as series(start_at)
+            ), resolved_slots as (
+              select slot.*,
+                exists(
+                  select 1 from public.blocked_slots b
+                  where b.court_id = slot.court_id
+                    and tstzrange(b.start_at, b.end_at, '[)') && tstzrange(slot.start_at, slot.end_at, '[)')
+                ) as is_blocked,
+                exists(
+                  select 1 from public.reservations r
+                  where r.court_id = slot.court_id and r.status in ('pending', 'confirmed')
+                    and r.reservation_window && tstzrange(slot.start_at, slot.end_at, '[)')
+                ) as is_reserved,
+                (
+                  select pr.price from public.pricing_rules pr
+                  where pr.court_id = slot.court_id and pr.active
+                    and pr.weekday = extract(dow from slot.start_at at time zone 'America/Sao_Paulo')::smallint
+                    and pr.start_time <= (slot.start_at at time zone 'America/Sao_Paulo')::time
+                    and pr.end_time >= (slot.end_at at time zone 'America/Sao_Paulo')::time
+                  order by (pr.end_time - pr.start_time) asc, pr.created_at desc, pr.id desc limit 1
+                ) as price
+              from time_slots slot
+            )
+            select court_id, start_at, end_at, duration_minutes,
+              case
+                when start_at <= now() then 'past'
+                when is_blocked then 'blocked'
+                when is_reserved then 'reserved'
+                when price is null then 'unavailable'
+                else 'available'
+              end as status,
+              case when start_at > now() and not is_blocked and not is_reserved then price else null end as price
+            from resolved_slots
+            order by start_at, court_id
+        """), {"arena_id": arena_id, "court_id": court_id, "day": day}).mappings()
+        return {"arena_id": arena["id"], "day": day, "is_open": is_open, "courts": courts, "slots": [dict(row) for row in slots]}
 
 
 def create_player_reservation(user_id: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -158,6 +269,49 @@ def create_player_reservation(user_id: str, data: dict[str, Any]) -> dict[str, A
     except IntegrityError as exc:
         # PostgreSQL's exclusion constraint remains the final concurrent-write guard.
         raise BookingConflictError from exc
+
+
+def cancel_player_reservation(
+    user_id: str,
+    reservation_id: UUID,
+    current_time: datetime | None = None,
+) -> dict[str, Any]:
+    """Cancel an active player reservation through the inclusive 90-minute deadline."""
+    session_factory = get_session_factory()
+    with session_factory.begin() as session:
+        reservation = session.execute(text("""
+            select id, status, start_at
+            from public.reservations
+            where id = :reservation_id and user_id = :user_id
+            for update
+        """), {"reservation_id": reservation_id, "user_id": user_id}).mappings().one_or_none()
+        if reservation is None:
+            raise PlayerReservationNotFoundError
+        if reservation["status"] not in {"pending", "confirmed"}:
+            raise PlayerReservationStateError
+
+        now = current_time or datetime.now(SAO_PAULO_TIME_ZONE)
+        local_now = now.replace(tzinfo=SAO_PAULO_TIME_ZONE) if now.tzinfo is None else now.astimezone(SAO_PAULO_TIME_ZONE)
+        start_at = reservation["start_at"]
+        local_start = start_at.replace(tzinfo=SAO_PAULO_TIME_ZONE) if start_at.tzinfo is None else start_at.astimezone(SAO_PAULO_TIME_ZONE)
+        if local_now > local_start - timedelta(minutes=90):
+            raise PlayerCancellationWindowClosedError
+
+        row = session.execute(text("""
+            update public.reservations
+            set status = 'cancelled', cancelled_at = coalesce(cancelled_at, :cancelled_at)
+            where id = :reservation_id and user_id = :user_id and status = :current_status
+              and :cancelled_at <= start_at - interval '90 minutes'
+            returning id, status, cancelled_at
+        """), {
+            "reservation_id": reservation_id,
+            "user_id": user_id,
+            "current_status": reservation["status"],
+            "cancelled_at": local_now,
+        }).mappings().one_or_none()
+        if row is None:
+            raise PlayerReservationCancellationConflictError
+        return {**dict(row), "previous_status": reservation["status"]}
 
 
 def list_player_reservations(user_id: str) -> list[dict[str, Any]]:

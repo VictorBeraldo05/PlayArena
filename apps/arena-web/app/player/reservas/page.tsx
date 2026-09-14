@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 
 import { PlayerBottomNav as PlayerNavigation } from '../../../components/player-bottom-nav';
 import { useAuth } from '../../../components/use-auth';
-import { apiRequest } from '../../../lib/api';
-import { BRAZIL_TIME_ZONE, formatCurrencyBRL, formatReservationDateParts, formatReservationTimeRange, formatTimeBR } from '../../../lib/format';
+import { ApiRequestError, apiRequest } from '../../../lib/api';
+import { BRAZIL_TIME_ZONE, formatCurrencyBRL, formatDateBR, formatReservationDateParts, formatReservationTimeRange, formatTimeBR } from '../../../lib/format';
+import { canPlayerCancelReservation, playerCancellationDeadline } from '../../../lib/reservation-cancellation';
 import { usePageReadyResource } from '../../../providers/page-ready-provider';
 
 type Reservation = { id: string; arena_name: string; court_name: string; start_at: string; end_at: string; price: string; status: string };
@@ -20,26 +21,54 @@ export default function PlayerReservationsPage() {
   const [error, setError] = useState('');
   const [tab, setTab] = useState<Tab>('upcoming');
   const [selectedReservation, setSelectedReservation] = useState<Reservation | null>(null);
-  const [now] = useState(() => Date.now());
+  const [cancellationTarget, setCancellationTarget] = useState<Reservation | null>(null);
+  const [cancellationError, setCancellationError] = useState('');
+  const [cancellationUnavailable, setCancellationUnavailable] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [now, setNow] = useState(() => Date.now());
   usePageReadyResource('player-reservations', items !== null || Boolean(error));
 
-  useEffect(() => {
+  const loadReservations = useCallback(async () => {
     if (!token) return;
-    const accessToken = token;
-    let active = true;
-    async function loadReservations() {
-      try {
-        const reservations = await apiRequest<Reservation[]>('/player/reservations', accessToken, { cache: 'no-store' });
-        if (active) { setItems(reservations); setError(''); }
-      } catch (requestError) {
-        const message = requestError instanceof Error ? requestError.message : '';
-        const friendlyError = message === 'Player access required.' ? 'Entre novamente com sua conta de jogador para ver suas reservas.' : 'Não foi possível carregar suas reservas. Tente novamente.';
-        if (active) { setItems([]); setError(friendlyError); }
-      }
+    try {
+      const reservations = await apiRequest<Reservation[]>('/player/reservations', token, { cache: 'no-store' });
+      setItems(reservations);
+      setError('');
+    } catch (requestError) {
+      const message = requestError instanceof Error ? requestError.message : '';
+      const friendlyError = message === 'Player access required.' ? 'Entre novamente com sua conta de jogador para ver suas reservas.' : 'Não foi possível carregar suas reservas. Tente novamente.';
+      setItems([]);
+      setError(friendlyError);
     }
-    void loadReservations();
-    return () => { active = false; };
   }, [token]);
+
+  useEffect(() => { const task = window.setTimeout(() => { void loadReservations(); }, 0); return () => window.clearTimeout(task); }, [loadReservations]);
+  useEffect(() => { const interval = window.setInterval(() => setNow(Date.now()), 30_000); return () => window.clearInterval(interval); }, []);
+  useEffect(() => { if (!notice) return; const timeout = window.setTimeout(() => setNotice(''), 3500); return () => window.clearTimeout(timeout); }, [notice]);
+
+  async function cancelReservation() {
+    if (!token || !cancellationTarget || isCancelling) return;
+    setIsCancelling(true);
+    setCancellationError('');
+    try {
+      const result = await apiRequest<{ id: string; status: string }>(`/player/reservations/${cancellationTarget.id}/cancel`, token, { method: 'PATCH' });
+      setItems((current) => current?.map((reservation) => reservation.id === result.id ? { ...reservation, status: result.status } : reservation) ?? current);
+      setCancellationTarget(null);
+      setNotice('Reserva cancelada');
+      void loadReservations();
+    } catch (requestError) {
+      if (requestError instanceof ApiRequestError && ['cancellation_window_closed', 'reservation_not_cancellable'].includes(requestError.code ?? '')) {
+        setCancellationError(requestError.code === 'cancellation_window_closed' ? 'O prazo para cancelamento desta reserva já encerrou.' : 'Esta reserva não está mais disponível para cancelamento.');
+        setCancellationUnavailable(true);
+        void loadReservations();
+      } else {
+        setCancellationError('Não foi possível cancelar a reserva. Tente novamente.');
+      }
+    } finally {
+      setIsCancelling(false);
+    }
+  }
 
   const reservations = items ?? [];
   const upcoming = reservations.filter((item) => isUpcoming(item, now)).sort((left, right) => new Date(left.start_at).getTime() - new Date(right.start_at).getTime());
@@ -55,7 +84,9 @@ export default function PlayerReservationsPage() {
       {items !== null ? <section className="reservation-tab-panel" key={tab} role="tabpanel">{tab === 'upcoming' ? <UpcomingReservations onSelect={setSelectedReservation} reservations={upcoming} /> : <ReservationHistory onSelect={setSelectedReservation} reservations={history} />}</section> : null}
     </div>
     <PlayerNavigation />
-    {selectedReservation ? <ReservationDetails reservation={selectedReservation} onClose={() => setSelectedReservation(null)} /> : null}
+    {selectedReservation ? <ReservationDetails now={now} onCancel={(reservation) => { setSelectedReservation(null); setCancellationTarget(reservation); setCancellationError(''); setCancellationUnavailable(false); }} onClose={() => setSelectedReservation(null)} reservation={selectedReservation} /> : null}
+    {cancellationTarget ? <CancellationConfirmation error={cancellationError} isCancelling={isCancelling} onCancel={() => void cancelReservation()} onClose={() => !isCancelling && setCancellationTarget(null)} reservation={cancellationTarget} unavailable={cancellationUnavailable} /> : null}
+    {notice ? <p aria-live="polite" className="fixed inset-x-4 bottom-24 z-50 mx-auto max-w-sm rounded-2xl border border-[#8FFF3C]/25 bg-[#111923]/95 px-4 py-3 text-center text-sm font-bold text-[#DFFFD0] shadow-2xl backdrop-blur">{notice}</p> : null}
   </main>;
 }
 
@@ -91,7 +122,17 @@ function StatusBadge({ status, compact = false }: { status: string; compact?: bo
 function UpcomingEmptyState() { return <section className="reservation-empty-state mt-9 rounded-[22px] border border-white/10 bg-[#111923]/85 p-7 text-center"><span aria-hidden="true" className="reservation-empty-ball"><BallIcon /></span><h2 className="mt-4 text-xl font-extrabold tracking-[-.035em]">Agenda livre</h2><p className="mt-2 text-sm text-[#9DA7B3]">Que tal marcar o próximo jogo?</p><a className="mt-6 inline-flex min-h-12 items-center justify-center rounded-2xl bg-[#8FFF3C] px-5 text-sm font-extrabold text-[#080D14]" href="/buscar">Buscar arenas <span className="ml-2 text-lg">→</span></a></section>; }
 function ReservationsSkeleton() { return <div className="mt-7 space-y-4"><div className="h-3 w-24 animate-pulse rounded bg-white/10" /><div className="h-[232px] animate-pulse rounded-[24px] bg-[#111923]" /><div className="h-3 w-32 animate-pulse rounded bg-white/10" /><div className="h-[98px] animate-pulse rounded-[18px] bg-[#111923]" /></div>; }
 
-function ReservationDetails({ reservation, onClose }: { reservation: Reservation; onClose: () => void }) { return <div aria-labelledby="reservation-details-title" aria-modal="true" className="fixed inset-0 z-40 flex items-end bg-black/60 p-3 backdrop-blur-sm sm:items-center sm:justify-center" role="dialog"><button aria-label="Fechar detalhes" className="absolute inset-0" onClick={onClose} type="button" /><section className="relative w-full max-w-md rounded-[24px] border border-white/10 bg-[#111923] p-5 shadow-2xl"><div className="flex items-start justify-between gap-4"><div><p className="reservation-section-label">Detalhes da reserva</p><h2 className="mt-2 text-xl font-extrabold" id="reservation-details-title">{reservation.arena_name}</h2></div><button aria-label="Fechar" className="grid h-10 w-10 place-items-center rounded-xl bg-white/5 text-xl text-[#C3CDD7]" onClick={onClose} type="button">×</button></div><div className="mt-5 space-y-3 border-y border-white/10 py-4 text-sm"><p className="flex justify-between gap-4"><span className="text-[#9DA7B3]">Quadra</span><b>{reservation.court_name}</b></p><p className="flex justify-between gap-4"><span className="text-[#9DA7B3]">Horário</span><b>{formatReservationTimeRange(reservation.start_at, reservation.end_at)}</b></p><p className="flex justify-between gap-4"><span className="text-[#9DA7B3]">Valor</span><b>{formatCurrencyBRL(reservation.price)}</b></p></div><div className="mt-4"><StatusBadge status={reservation.status} /></div></section></div>; }
+function ReservationDetails({ reservation, onClose, onCancel, now }: { reservation: Reservation; onClose: () => void; onCancel: (reservation: Reservation) => void; now: number }) {
+  const deadline = playerCancellationDeadline(reservation.start_at);
+  const cancellationEligible = canPlayerCancelReservation(reservation, now);
+  const activeReservation = ['pending', 'confirmed'].includes(reservation.status);
+  return <div aria-labelledby="reservation-details-title" aria-modal="true" className="fixed inset-0 z-40 flex items-end bg-black/60 p-3 backdrop-blur-sm sm:items-center sm:justify-center" role="dialog"><button aria-label="Fechar detalhes" className="absolute inset-0" onClick={onClose} type="button" /><section className="relative w-full max-w-md rounded-[24px] border border-white/10 bg-[#111923] p-5 shadow-2xl"><div className="flex items-start justify-between gap-4"><div><p className="reservation-section-label">Detalhes da reserva</p><h2 className="mt-2 text-xl font-extrabold" id="reservation-details-title">{reservation.arena_name}</h2></div><button aria-label="Fechar" className="grid h-10 w-10 place-items-center rounded-xl bg-white/5 text-xl text-[#C3CDD7]" onClick={onClose} type="button">×</button></div><div className="mt-5 space-y-3 border-y border-white/10 py-4 text-sm"><p className="flex justify-between gap-4"><span className="text-[#9DA7B3]">Quadra</span><b>{reservation.court_name}</b></p><p className="flex justify-between gap-4"><span className="text-[#9DA7B3]">Horário</span><b>{formatReservationTimeRange(reservation.start_at, reservation.end_at)}</b></p><p className="flex justify-between gap-4"><span className="text-[#9DA7B3]">Valor</span><b>{formatCurrencyBRL(reservation.price)}</b></p></div><div className="mt-4"><StatusBadge status={reservation.status} /></div>{activeReservation ? <div className="mt-5 border-t border-white/10 pt-4">{cancellationEligible && deadline ? <><p className="text-xs font-semibold text-[#AAB7C5]">Cancelamento até {formatTimeBR(deadline)}</p><button className="mt-3 text-sm font-bold text-[#FF9A9A] transition hover:text-[#FFB3B3]" onClick={() => onCancel(reservation)} type="button">Cancelar reserva</button></> : <p className="text-xs font-semibold text-[#9DA7B3]">Prazo de cancelamento encerrado</p>}</div> : null}</section></div>;
+}
+
+function CancellationConfirmation({ reservation, onClose, onCancel, isCancelling, unavailable, error }: { reservation: Reservation; onClose: () => void; onCancel: () => void; isCancelling: boolean; unavailable: boolean; error: string }) {
+  const deadline = playerCancellationDeadline(reservation.start_at);
+  return <div aria-labelledby="cancel-reservation-title" aria-modal="true" className="fixed inset-0 z-50 flex items-end bg-black/65 p-3 backdrop-blur-sm sm:items-center sm:justify-center" role="dialog"><button aria-label="Voltar aos detalhes" className="absolute inset-0" disabled={isCancelling} onClick={onClose} type="button" /><section className="relative w-full max-w-md rounded-[24px] border border-white/10 bg-[#111923] p-5 shadow-2xl"><p className="reservation-section-label">Cancelar reserva</p><h2 className="mt-2 text-xl font-extrabold" id="cancel-reservation-title">Tem certeza que deseja cancelar esta reserva?</h2><p className="mt-2 text-sm leading-5 text-[#AAB7C5]">Essa ação não pode ser desfeita.</p><div className="mt-5 rounded-2xl border border-white/[.08] bg-[#080D14]/60 p-4 text-sm"><p className="font-extrabold">{reservation.arena_name}</p><p className="mt-1 text-[#C3CDD7]">{reservation.court_name}</p><p className="mt-3 font-semibold text-[#D7DEE7]">{formatDateBR(reservation.start_at)} · {formatReservationTimeRange(reservation.start_at, reservation.end_at)}</p>{deadline ? <p className="mt-3 text-xs font-semibold text-[#AAB7C5]">Cancelamento disponível até {formatTimeBR(deadline)}.</p> : null}</div>{error ? <p className="mt-4 rounded-xl border border-[#FF4B4B]/25 bg-[#FF4B4B]/10 px-3 py-2 text-sm font-semibold text-[#FFB3B3]">{error}</p> : null}<div className="mt-5 grid grid-cols-2 gap-2"><button className="min-h-12 rounded-2xl border border-white/10 text-sm font-bold text-[#D7DEE7]" disabled={isCancelling} onClick={onClose} type="button">Voltar</button><button className="min-h-12 rounded-2xl border border-[#FF4B4B]/50 bg-[#FF4B4B]/15 px-3 text-sm font-extrabold text-[#FFB3B3] transition hover:bg-[#FF4B4B]/25 disabled:opacity-60" disabled={isCancelling || unavailable} onClick={onCancel} type="button">{isCancelling ? 'Cancelando...' : unavailable ? 'Cancelamento indisponível' : 'Cancelar reserva'}</button></div></section></div>;
+}
 
 function isUpcoming(reservation: Reservation, now: number) { return new Date(reservation.start_at).getTime() >= now && ['pending', 'confirmed'].includes(reservation.status); }
 function reservationDateParts(value: string) { return formatReservationDateParts(value); }

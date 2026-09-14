@@ -1,5 +1,6 @@
 from datetime import date, datetime, time
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -25,6 +26,30 @@ class AvailabilityOption(BaseModel):
     end_at: datetime
     duration_minutes: int
     price: Decimal
+
+
+class PublicArenaScheduleCourt(BaseModel):
+    id: UUID
+    name: str
+    default_duration_minutes: int
+    sports: list[str]
+
+
+class PublicArenaScheduleSlot(BaseModel):
+    court_id: UUID
+    start_at: datetime
+    end_at: datetime
+    duration_minutes: int
+    status: Literal["available", "reserved", "blocked", "past", "unavailable"]
+    price: Decimal | None = None
+
+
+class PublicArenaSchedule(BaseModel):
+    arena_id: UUID
+    day: date
+    is_open: bool
+    courts: list[PublicArenaScheduleCourt]
+    slots: list[PublicArenaScheduleSlot]
 
 
 class PlayerReservationCreate(BaseModel):

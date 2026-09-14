@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta
+import inspect
+from datetime import date, datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -11,7 +12,7 @@ from app.main import app
 from app.repositories import booking_repository
 from app.repositories.booking_repository import BookingConflictError
 from app.schemas.auth import AuthenticatedUser
-from app.schemas.booking import PlayerReservationCreate
+from app.schemas.booking import SAO_PAULO_TIME_ZONE, PlayerReservationCreate
 
 PLAYER_A = AuthenticatedUser(id="00000000-0000-0000-0000-00000000000a", email="a@playarena.dev")
 OWNER_A = AuthenticatedUser(id="00000000-0000-0000-0000-00000000000b", email="owner@playarena.dev")
@@ -42,6 +43,25 @@ def test_availability_endpoint_matches_public_response_model(monkeypatch) -> Non
     assert response.json()[0] == option
 
 
+def test_availability_endpoint_forwards_optional_arena_and_court_filters(monkeypatch) -> None:
+    arena_id = "10000000-0000-0000-0000-000000000001"
+    captured = {}
+
+    def scoped_available(city, sport, start_at, *, arena_id=None, court_id=None):
+        captured.update(city=city, sport=sport, start_at=start_at, arena_id=arena_id, court_id=court_id)
+        return []
+
+    monkeypatch.setattr(booking, "available", scoped_available)
+    with TestClient(app, raise_server_exceptions=True) as client:
+        response = client.get(f"/availability?sport=Society&start_at={FUTURE_START.isoformat()}&arena_id={arena_id}&court_id={COURT_A}")
+
+    assert response.status_code == 200
+    assert captured["city"] is None
+    assert captured["sport"] == "Society"
+    assert str(captured["arena_id"]) == arena_id
+    assert str(captured["court_id"]) == COURT_A
+
+
 def test_public_availability_has_the_same_response_for_guest_and_authenticated_player(monkeypatch) -> None:
     option = {"arena_id": "10000000-0000-0000-0000-000000000001", "arena_name": "Boleiros", "court_id": COURT_A, "court_name": "Campo 1", "start_at": FUTURE_START.isoformat(), "end_at": (FUTURE_START + timedelta(hours=1)).isoformat(), "duration_minutes": 60, "price": "115.00"}
     monkeypatch.setattr(booking, "available", lambda city, sport, start_at: [option])
@@ -65,6 +85,79 @@ def test_public_catalog_endpoint_returns_boleiros(monkeypatch) -> None:
         response = client.get("/arenas?city=Piracicaba")
     assert response.status_code == 200
     assert response.json() == catalog
+
+
+def public_schedule_payload(arena_id: str, court_id: str, day: date) -> dict:
+    start_at = datetime.combine(day, datetime.min.time()).replace(hour=19)
+    return {
+        "arena_id": arena_id,
+        "day": day,
+        "is_open": True,
+        "courts": [{"id": court_id, "name": "Campo 1", "default_duration_minutes": 60, "sports": ["Society"]}],
+        "slots": [
+            {"court_id": court_id, "start_at": start_at, "end_at": start_at + timedelta(minutes=60), "duration_minutes": 60, "status": "available", "price": "115.00"},
+            {"court_id": court_id, "start_at": start_at + timedelta(hours=1), "end_at": start_at + timedelta(hours=2), "duration_minutes": 60, "status": "reserved", "price": None},
+            {"court_id": court_id, "start_at": start_at + timedelta(hours=2), "end_at": start_at + timedelta(hours=3), "duration_minutes": 60, "status": "blocked", "price": None},
+        ],
+    }
+
+
+def test_public_schedule_endpoint_returns_only_operational_slot_data(monkeypatch) -> None:
+    arena_id = "10000000-0000-0000-0000-000000000001"
+    day = FUTURE_START.date()
+    captured = {}
+
+    def schedule_for_arena(received_arena_id, received_day, court_id=None):
+        captured.update(arena_id=received_arena_id, day=received_day, court_id=court_id)
+        return public_schedule_payload(arena_id, COURT_A, day)
+
+    monkeypatch.setattr(booking, "public_arena_schedule", schedule_for_arena)
+    with TestClient(app, raise_server_exceptions=True) as client:
+        response = client.get(f"/arenas/{arena_id}/schedule?day={day.isoformat()}&court_id={COURT_A}")
+
+    assert response.status_code == 200
+    assert str(captured["arena_id"]) == arena_id
+    assert captured["day"] == day
+    assert str(captured["court_id"]) == COURT_A
+    first_slot = response.json()["slots"][0]
+    assert first_slot == {
+        "court_id": COURT_A,
+        "start_at": f"{day.isoformat()}T19:00:00",
+        "end_at": f"{day.isoformat()}T20:00:00",
+        "duration_minutes": 60,
+        "status": "available",
+        "price": "115.00",
+    }
+    assert not {"customer_name", "customer_phone", "user_id", "reservation_id", "blocked_reason"}.intersection(first_slot)
+
+
+def test_public_schedule_returns_404_for_unknown_arena_or_court(monkeypatch) -> None:
+    arena_id = "10000000-0000-0000-0000-000000000001"
+    day = FUTURE_START.date().isoformat()
+    monkeypatch.setattr(booking, "public_arena_schedule", lambda *_args: None)
+    with TestClient(app, raise_server_exceptions=True) as client:
+        assert client.get(f"/arenas/{arena_id}/schedule?day={day}").status_code == 404
+
+    monkeypatch.setattr(booking, "public_arena_schedule", lambda *_args: (_ for _ in ()).throw(booking.PublicScheduleCourtNotFoundError()))
+    with TestClient(app, raise_server_exceptions=True) as client:
+        assert client.get(f"/arenas/{arena_id}/schedule?day={day}&court_id={COURT_A}").status_code == 404
+
+
+def test_public_schedule_rejects_past_days(create_client) -> None:
+    past_day = datetime.now(SAO_PAULO_TIME_ZONE).date() - timedelta(days=1)
+    response = create_client.get(f"/arenas/10000000-0000-0000-0000-000000000001/schedule?day={past_day.isoformat()}")
+    assert response.status_code == 422
+
+
+def test_public_schedule_repository_query_uses_public_operational_fields_only() -> None:
+    query_source = inspect.getsource(booking_repository.public_arena_schedule).lower()
+    assert "generate_series" in query_source
+    assert "pricing_rules" in query_source
+    assert "blocked_slots" in query_source
+    assert "reservations r" in query_source
+    assert "customer_name" not in query_source
+    assert "customer_phone" not in query_source
+    assert "user_id" not in query_source
 
 
 def test_public_catalog_types_optional_city_for_postgresql(monkeypatch) -> None:

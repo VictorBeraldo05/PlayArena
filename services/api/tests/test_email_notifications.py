@@ -117,6 +117,20 @@ def test_cancelled_notification_uses_confirmed_to_cancelled_transition() -> None
     assert sent[0][1].subject == "Reserva cancelada"
 
 
+def test_player_cancellation_of_a_pending_reservation_uses_the_cancelled_template() -> None:
+    sent: list[tuple] = []
+    service = ReservationNotificationService(
+        enabled_config(),
+        fetch_reservation=lambda _reservation_id: reservation_payload(),
+        sender_factory=lambda *_args: RecordingSender(sent),
+    )
+
+    service.send_status_change(RESERVATION_ID, "pending", "cancelled", notification_override="cancelled")
+
+    assert len(sent) == 1
+    assert sent[0][1].subject == "Reserva cancelada"
+
+
 def test_missing_recipient_email_skips_notification_without_failing_transition() -> None:
     sender_created = False
 

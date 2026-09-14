@@ -4,7 +4,13 @@
 
 `POST /player/reservations` aceita somente `court_id`, `start_at`, `customer_name` e `customer_phone`. O backend deriva a arena, a duracao da quadra, `end_at`, preco, `status=pending` e `source=app` a partir do usuario autenticado e da configuracao persistida.
 
-`GET /player/reservations` sempre filtra por `reservations.user_id` do token validado e retorna reservas `pending`, `confirmed`, `cancelled`, `completed` e `no_show`. O histórico separa próximas e anteriores exclusivamente pelo instante `start_at`: reservas futuras, inclusive canceladas, ficam em Próximas com seu status real.
+`GET /player/reservations` sempre filtra por `reservations.user_id` do token validado e retorna reservas `pending`, `confirmed`, `cancelled`, `completed` e `no_show`. A interface mostra em Próximas apenas reservas futuras ativas (`pending` e `confirmed`); canceladas pertencem ao Histórico.
+
+## Player Cancellation Policy
+
+`PATCH /player/reservations/{reservation_id}/cancel` permite ao jogador cancelar somente a própria reserva em status `pending` ou `confirmed`, até **90 minutos antes do início**, inclusive. A regra é avaliada no backend com timestamps timezone-aware equivalentes a `America/Sao_Paulo`; o frontend apenas antecipa a disponibilidade da ação.
+
+O update é transacional, trava a reserva, confere novamente status e prazo e grava `status=cancelled` com `cancelled_at`. Uma reserva cancelada deixa imediatamente de bloquear disponibilidade, pois as consultas consideram somente `pending` e `confirmed`. O cancelamento pelo player envia o e-mail de **Reserva cancelada** somente depois da transição persistida.
 
 ## Disponibilidade e preco
 
