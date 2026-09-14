@@ -1,7 +1,53 @@
 from functools import lru_cache
+import json
+from urllib.parse import urlparse
 
-from pydantic import Field
+from pydantic import Field, PositiveInt
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+DEFAULT_WEB_ORIGINS = (
+    "http://localhost:3000",
+    "https://playarena-phi.vercel.app",
+    "https://useplayarena.com.br",
+    "https://www.useplayarena.com.br",
+)
+
+
+def parse_web_origins(raw_origins: str | None) -> list[str]:
+    """Parse comma-separated origins, with JSON-list support for legacy Render values."""
+    if raw_origins is None or not raw_origins.strip():
+        return list(DEFAULT_WEB_ORIGINS)
+
+    raw_value = raw_origins.strip()
+    if raw_value.startswith("["):
+        try:
+            values = json.loads(raw_value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("WEB_ORIGINS must be a comma-separated origin list.") from exc
+        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+            raise ValueError("WEB_ORIGINS JSON values must be strings.")
+    else:
+        values = raw_value.split(",")
+
+    origins: list[str] = []
+    for raw_origin in values:
+        origin = raw_origin.strip().strip('"').rstrip("/")
+        parsed = urlparse(origin)
+        if (
+            not origin
+            or parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.path
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("WEB_ORIGINS must contain origins without paths, queries, or fragments.")
+        if origin not in origins:
+            origins.append(origin)
+    if not origins:
+        raise ValueError("WEB_ORIGINS must include at least one origin.")
+    return origins
 
 
 class Settings(BaseSettings):
@@ -11,7 +57,15 @@ class Settings(BaseSettings):
     supabase_anon_key: str | None = Field(default=None, alias="SUPABASE_ANON_KEY")
     supabase_service_role_key: str | None = Field(default=None, alias="SUPABASE_SERVICE_ROLE_KEY")
     supabase_jwt_issuer: str | None = None
-    web_origin: str = Field(default="http://localhost:3000", alias="WEB_ORIGIN")
+    web_origin: str | None = Field(default=None, alias="WEB_ORIGIN")
+    web_origins: str | None = Field(default=None, alias="WEB_ORIGINS")
+    api_docs_enabled: bool = Field(default=True, alias="API_DOCS_ENABLED")
+    trust_proxy_headers: bool = Field(default=False, alias="TRUST_PROXY_HEADERS")
+    analytics_rate_limit_per_minute: PositiveInt = Field(default=120, alias="ANALYTICS_RATE_LIMIT_PER_MINUTE")
+    availability_rate_limit_per_minute: PositiveInt = Field(default=60, alias="AVAILABILITY_RATE_LIMIT_PER_MINUTE")
+    reservation_rate_limit_per_minute: PositiveInt = Field(default=10, alias="RESERVATION_RATE_LIMIT_PER_MINUTE")
+    owner_mutation_rate_limit_per_minute: PositiveInt = Field(default=90, alias="OWNER_MUTATION_RATE_LIMIT_PER_MINUTE")
+    max_request_body_bytes: PositiveInt = Field(default=65536, alias="MAX_REQUEST_BODY_BYTES")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -19,6 +73,10 @@ class Settings(BaseSettings):
         extra="ignore",
         populate_by_name=True,
     )
+
+    @property
+    def allowed_web_origins(self) -> list[str]:
+        return parse_web_origins(self.web_origins if self.web_origins is not None else self.web_origin)
 
 
 @lru_cache

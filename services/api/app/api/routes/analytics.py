@@ -1,5 +1,7 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
+from app.core.config import settings
+from app.core.rate_limit import enforce_rate_limit
 from app.dependencies.auth import get_current_role, get_current_user
 from app.repositories.analytics_repository import insert_event, platform_overview
 from app.schemas.analytics import AnalyticsEventCreate
@@ -26,7 +28,8 @@ def require_admin(current_user: AuthenticatedUser = Depends(get_current_user), r
 
 
 @router.post("/events", status_code=status.HTTP_202_ACCEPTED)
-def post_event(event: AnalyticsEventCreate, current_user: AuthenticatedUser | None = Depends(optional_user)) -> dict:
+def post_event(request: Request, event: AnalyticsEventCreate, current_user: AuthenticatedUser | None = Depends(optional_user)) -> dict:
+    enforce_rate_limit(request, scope="analytics", limit=settings.analytics_rate_limit_per_minute)
     insert_event(event.model_dump(mode="json"), current_user.id if current_user else None)
     return {"accepted": True}
 

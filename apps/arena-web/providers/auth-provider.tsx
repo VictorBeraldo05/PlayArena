@@ -24,17 +24,6 @@ interface ArenaInput {
   state: string;
 }
 
-interface OnboardingDiagnostic {
-  auth_uid: string | null;
-  database_current_user: string;
-  database_session_user: string;
-  profile_id: string | null;
-  profile_role: string | null;
-  profile_role_length: number | null;
-  profile_is_arena_owner: boolean | null;
-  profile_role_hex: string | null;
-}
-
 interface AuthContextValue {
   session: Session | null;
   profile: Profile | null;
@@ -235,32 +224,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     if (error) {
-      console.error('[PlayArena] arena creation failed', {
-        code: error.code,
-        message: error.message,
-        details: error.details,
-        hint: error.hint,
-      });
-
-      const { data: diagnostic, error: diagnosticError } = await supabase.rpc(
-        'onboarding_function_context_diagnostic',
-      );
-      const diagnosticRow = diagnosticError
-        ? null
-        : (diagnostic as OnboardingDiagnostic[] | null)?.[0] ?? null;
-
-      console.info('[PlayArena] onboarding function context diagnostic', {
-        authenticatedUserId: userData.user.id,
-        databaseAuthUid: diagnosticRow?.auth_uid ?? null,
-        databaseCurrentUser: diagnosticRow?.database_current_user ?? null,
-        databaseSessionUser: diagnosticRow?.database_session_user ?? null,
-        profileId: diagnosticRow?.profile_id ?? null,
-        profileRole: diagnosticRow?.profile_role ?? null,
-        profileRoleLength: diagnosticRow?.profile_role_length ?? null,
-        profileIsArenaOwner: diagnosticRow?.profile_is_arena_owner ?? null,
-        profileRoleHex: diagnosticRow?.profile_role_hex ?? null,
-        diagnosticAvailable: !diagnosticError,
-      });
       setErrorMessage(error.message);
       return false;
     }

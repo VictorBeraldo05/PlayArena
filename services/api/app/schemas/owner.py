@@ -11,6 +11,10 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ApiInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
 class ArenaResponse(ApiModel):
     id: UUID
     name: str
@@ -25,7 +29,7 @@ class ArenaResponse(ApiModel):
     active: bool
 
 
-class ArenaUpdate(BaseModel):
+class ArenaUpdate(ApiInput):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
     phone: str | None = Field(default=None, max_length=30)
@@ -35,7 +39,7 @@ class ArenaUpdate(BaseModel):
     state: str | None = Field(default=None, min_length=2, max_length=2)
 
 
-class ArenaLogoUpdate(BaseModel):
+class ArenaLogoUpdate(ApiInput):
     logo_path: str | None = Field(default=None, max_length=300)
 
     @field_validator("logo_path")
@@ -66,12 +70,12 @@ class CourtResponse(ApiModel):
     sports: list[SportResponse] = []
 
 
-class CourtCreate(BaseModel):
+class CourtCreate(ApiInput):
     name: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
     default_duration_minutes: int = Field(default=60, gt=0, le=360)
     active: bool = True
-    sport_ids: list[int] = Field(default_factory=list)
+    sport_ids: list[int] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
     def validate_active_court_sports(self) -> "CourtCreate":
@@ -80,18 +84,18 @@ class CourtCreate(BaseModel):
         return self
 
 
-class CourtUpdate(BaseModel):
+class CourtUpdate(ApiInput):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
     default_duration_minutes: int | None = Field(default=None, gt=0, le=360)
     active: bool | None = None
 
 
-class CourtSportsUpdate(BaseModel):
-    sport_ids: list[int] = Field(default_factory=list)
+class CourtSportsUpdate(ApiInput):
+    sport_ids: list[int] = Field(default_factory=list, max_length=20)
 
 
-class OpeningHourInput(BaseModel):
+class OpeningHourInput(ApiInput):
     weekday: int = Field(ge=0, le=6)
     open_time: time
     close_time: time
@@ -104,8 +108,8 @@ class OpeningHourInput(BaseModel):
         return self
 
 
-class OpeningHoursUpdate(BaseModel):
-    hours: list[OpeningHourInput]
+class OpeningHoursUpdate(ApiInput):
+    hours: list[OpeningHourInput] = Field(max_length=14)
 
 
 class OpeningHourResponse(ApiModel):
@@ -117,7 +121,7 @@ class OpeningHourResponse(ApiModel):
     active: bool
 
 
-class PricingRuleCreate(BaseModel):
+class PricingRuleCreate(ApiInput):
     court_id: UUID
     weekday: int = Field(ge=0, le=6)
     start_time: time
@@ -132,7 +136,7 @@ class PricingRuleCreate(BaseModel):
         return self
 
 
-class PricingRuleUpdate(BaseModel):
+class PricingRuleUpdate(ApiInput):
     weekday: int | None = Field(default=None, ge=0, le=6)
     start_time: time | None = None
     end_time: time | None = None

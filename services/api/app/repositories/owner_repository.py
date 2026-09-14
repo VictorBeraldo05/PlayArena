@@ -19,6 +19,10 @@ class ReservationConflictError(Exception):
     pass
 
 
+class ReservationStateError(Exception):
+    pass
+
+
 def _rows(statement: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -394,11 +398,17 @@ def update_reservation_status(user_id: str, reservation_id: UUID, next_status: s
     session_factory = get_session_factory()
     try:
         with session_factory.begin() as session:
-            _owned_reservation(session, user_id, reservation_id)
-            return dict(session.execute(text("""update public.reservations set status=:status,
+            reservation = _owned_reservation(session, user_id, reservation_id)
+            allowed_current_statuses = {"pending"} if next_status == "confirmed" else {"pending", "confirmed"}
+            if reservation["status"] not in allowed_current_statuses:
+                raise ReservationStateError("Reservation cannot transition from its current status.")
+            row = session.execute(text("""update public.reservations set status=:status,
               confirmed_at=case when :status='confirmed' then coalesce(confirmed_at, timezone('utc', now())) else confirmed_at end,
               cancelled_at=case when :status='cancelled' then coalesce(cancelled_at, timezone('utc', now())) else cancelled_at end
-              where id=:reservation_id returning id,status"""), {"status":next_status,"reservation_id":reservation_id}).mappings().one())
+              where id=:reservation_id and status=:current_status returning id,status"""), {"status":next_status,"reservation_id":reservation_id,"current_status":reservation["status"]}).mappings().one_or_none()
+            if row is None:
+                raise ReservationConflictError
+            return dict(row)
     except IntegrityError as exc:
         raise ReservationConflictError from exc
 

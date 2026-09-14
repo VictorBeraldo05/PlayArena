@@ -2,8 +2,10 @@ import logging
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from app.core.config import settings
+from app.core.rate_limit import enforce_rate_limit
 from app.dependencies.auth import get_current_role, get_current_user
 from app.repositories.booking_repository import (
     BookingConflictError,
@@ -14,7 +16,7 @@ from app.repositories.booking_repository import (
     public_arenas,
 )
 from app.schemas.auth import AuthenticatedUser
-from app.schemas.booking import AvailabilityOption, PlayerReservationCreate
+from app.schemas.booking import AvailabilityOption, PlayerReservationCreate, validate_future_booking_start
 
 router = APIRouter(tags=["availability and reservations"])
 logger = logging.getLogger(__name__)
@@ -46,18 +48,31 @@ def get_public_arena(arena_id: UUID) -> dict:
 
 @router.get("/availability", response_model=list[AvailabilityOption], response_model_exclude_none=True)
 def get_availability(
-    city: str = Query(min_length=1),
-    sport: str = Query(min_length=1),
+    request: Request,
+    city: str = Query(min_length=1, max_length=120),
+    sport: str = Query(min_length=1, max_length=120),
     start_at: datetime = Query(),
 ) -> list[dict]:
-    return available(city, sport, start_at)
+    enforce_rate_limit(request, scope="availability", limit=settings.availability_rate_limit_per_minute)
+    try:
+        validate_future_booking_start(start_at)
+        return available(city, sport, start_at)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 @router.post("/player/reservations", status_code=status.HTTP_201_CREATED)
 def post_player_reservation(
+    request: Request,
     input_data: PlayerReservationCreate,
     current_user: AuthenticatedUser = Depends(require_player),
 ) -> dict:
+    enforce_rate_limit(
+        request,
+        scope="reservation",
+        principal=f"user:{current_user.id}",
+        limit=settings.reservation_rate_limit_per_minute,
+    )
     try:
         return create_player_reservation(current_user.id, input_data.model_dump())
     except BookingConflictError as exc:

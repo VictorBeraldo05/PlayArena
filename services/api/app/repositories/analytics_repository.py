@@ -14,7 +14,7 @@ def insert_event(event: dict[str, Any], user_id: str | None) -> None:
             (event_name, user_id, anonymous_id, session_id, arena_id, court_id, sport_id, reservation_id, properties)
           values
             (:event_name, :user_id, :anonymous_id, :session_id, :arena_id, :court_id, :sport_id, :reservation_id, cast(:properties as jsonb))
-        """), {**event, "user_id": user_id, "properties": __import__("json").dumps(event["properties"])} )
+        """), {**event, "user_id": user_id, "reservation_id": None, "properties": __import__("json").dumps(event["properties"])} )
 
 
 def platform_overview(days: int) -> dict[str, Any]:

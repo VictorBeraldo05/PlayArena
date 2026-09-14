@@ -1,9 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from app.api.routes import booking
 from app.main import app
@@ -15,35 +16,40 @@ from app.schemas.booking import PlayerReservationCreate
 PLAYER_A = AuthenticatedUser(id="00000000-0000-0000-0000-00000000000a", email="a@playarena.dev")
 OWNER_A = AuthenticatedUser(id="00000000-0000-0000-0000-00000000000b", email="owner@playarena.dev")
 COURT_A = "20000000-0000-0000-0000-000000000001"
+FUTURE_START = (datetime.now() + timedelta(days=2)).replace(microsecond=0)
+
+
+def route_request() -> Request:
+    return Request({"type": "http", "method": "GET", "path": "/", "headers": [], "client": ("127.0.0.1", 12345)})
 
 
 def reservation_request() -> PlayerReservationCreate:
-    return PlayerReservationCreate(court_id=COURT_A, start_at="2026-09-04T20:00:00", customer_name="Jose", customer_phone="11999999999")
+    return PlayerReservationCreate(court_id=COURT_A, start_at=FUTURE_START, customer_name="Jose", customer_phone="11999999999")
 
 
 def test_availability_returns_server_resolved_option(monkeypatch) -> None:
-    option = {"arena_id": "10000000-0000-0000-0000-000000000001", "arena_name": "Boleiros", "court_id": COURT_A, "court_name": "Campo 1", "start_at": datetime(2026, 9, 4, 20), "end_at": datetime(2026, 9, 4, 21), "duration_minutes": 60, "price": "150.00"}
+    option = {"arena_id": "10000000-0000-0000-0000-000000000001", "arena_name": "Boleiros", "court_id": COURT_A, "court_name": "Campo 1", "start_at": FUTURE_START, "end_at": FUTURE_START + timedelta(hours=1), "duration_minutes": 60, "price": "150.00"}
     monkeypatch.setattr(booking, "available", lambda city, sport, start_at: [option])
-    assert booking.get_availability("Piracicaba", "Society", datetime(2026, 9, 4, 20)) == [option]
+    assert booking.get_availability(route_request(), "Piracicaba", "Society", FUTURE_START) == [option]
 
 
 def test_availability_endpoint_matches_public_response_model(monkeypatch) -> None:
-    option = {"arena_id": "10000000-0000-0000-0000-000000000001", "arena_name": "Boleiros", "court_id": COURT_A, "court_name": "Campo 1", "start_at": "2026-09-02T20:00:00", "end_at": "2026-09-02T21:00:00", "duration_minutes": 60, "price": "1.20"}
+    option = {"arena_id": "10000000-0000-0000-0000-000000000001", "arena_name": "Boleiros", "court_id": COURT_A, "court_name": "Campo 1", "start_at": FUTURE_START.isoformat(), "end_at": (FUTURE_START + timedelta(hours=1)).isoformat(), "duration_minutes": 60, "price": "1.20"}
     monkeypatch.setattr(booking, "available", lambda city, sport, start_at: [option])
     with TestClient(app, raise_server_exceptions=True) as client:
-        response = client.get("/availability?city=Piracicaba&sport=Society&start_at=2026-09-02T20:00:00")
+        response = client.get(f"/availability?city=Piracicaba&sport=Society&start_at={FUTURE_START.isoformat()}")
     assert response.status_code == 200
     assert response.json()[0] == option
 
 
 def test_public_availability_has_the_same_response_for_guest_and_authenticated_player(monkeypatch) -> None:
-    option = {"arena_id": "10000000-0000-0000-0000-000000000001", "arena_name": "Boleiros", "court_id": COURT_A, "court_name": "Campo 1", "start_at": "2026-09-08T20:00:00", "end_at": "2026-09-08T21:00:00", "duration_minutes": 60, "price": "115.00"}
+    option = {"arena_id": "10000000-0000-0000-0000-000000000001", "arena_name": "Boleiros", "court_id": COURT_A, "court_name": "Campo 1", "start_at": FUTURE_START.isoformat(), "end_at": (FUTURE_START + timedelta(hours=1)).isoformat(), "duration_minutes": 60, "price": "115.00"}
     monkeypatch.setattr(booking, "available", lambda city, sport, start_at: [option])
 
     with TestClient(app, raise_server_exceptions=True) as client:
-        guest = client.get("/availability?city=Piracicaba&sport=Society&start_at=2026-09-08T20:00:00")
+        guest = client.get(f"/availability?city=Piracicaba&sport=Society&start_at={FUTURE_START.isoformat()}")
         player = client.get(
-            "/availability?city=Piracicaba&sport=Society&start_at=2026-09-08T20:00:00",
+            f"/availability?city=Piracicaba&sport=Society&start_at={FUTURE_START.isoformat()}",
             headers={"Authorization": "Bearer ignored-by-public-discovery"},
         )
 
@@ -89,12 +95,14 @@ def test_public_catalog_types_optional_city_for_postgresql(monkeypatch) -> None:
 
 def test_player_reservation_contract_rejects_client_controlled_fields() -> None:
     assert set(reservation_request().model_dump()) == {"court_id", "start_at", "customer_name", "customer_phone"}
+    with pytest.raises(ValueError):
+        PlayerReservationCreate(court_id=COURT_A, start_at=FUTURE_START, customer_name="Jose", customer_phone="11999999999", price=1)
 
 
 def test_player_reservation_conflict_is_controlled(monkeypatch) -> None:
     monkeypatch.setattr(booking, "create_player_reservation", lambda user_id, data: (_ for _ in ()).throw(BookingConflictError()))
     with pytest.raises(HTTPException) as error:
-        booking.post_player_reservation(reservation_request(), PLAYER_A)
+        booking.post_player_reservation(route_request(), reservation_request(), PLAYER_A)
     assert error.value.status_code == 409
 
 
@@ -108,9 +116,14 @@ def test_only_player_role_can_create_or_list_reservations() -> None:
 def test_player_reservation_uses_authenticated_user_only(monkeypatch) -> None:
     captured = {}
     monkeypatch.setattr(booking, "create_player_reservation", lambda user_id, data: captured.update(user_id=user_id, data=data) or {"id": "r"})
-    booking.post_player_reservation(reservation_request(), PLAYER_A)
+    booking.post_player_reservation(route_request(), reservation_request(), PLAYER_A)
     assert captured["user_id"] == PLAYER_A.id
     assert not {"arena_id", "end_at", "price", "status", "source"}.intersection(captured["data"])
+
+
+def test_availability_rejects_past_start_time(create_client) -> None:
+    response = create_client.get("/availability?city=Piracicaba&sport=Society&start_at=2020-01-01T20:00:00")
+    assert response.status_code == 422
 
 
 def test_player_reservations_are_loaded_for_authenticated_player_only(monkeypatch) -> None:

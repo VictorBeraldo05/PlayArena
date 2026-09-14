@@ -3,11 +3,12 @@ from uuid import UUID
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
 from app.api.routes import owner
 from app.api.routes.owner import require_arena_owner
 from app.repositories import owner_repository
-from app.repositories.owner_repository import OwnerResourceNotFoundError
+from app.repositories.owner_repository import OwnerResourceNotFoundError, ReservationStateError
 from app.schemas.auth import AuthenticatedUser
 from app.schemas.owner import ArenaLogoUpdate
 
@@ -24,6 +25,10 @@ BLOCKED_SLOT_B = UUID("40000000-0000-0000-0000-00000000000b")
 BLOCKED_SLOT_A = UUID("40000000-0000-0000-0000-00000000000a")
 RESERVATION_A = UUID("50000000-0000-0000-0000-00000000000a")
 RESERVATION_B = UUID("50000000-0000-0000-0000-00000000000b")
+
+
+def route_request() -> Request:
+    return Request({"type": "http", "method": "POST", "path": "/", "headers": [], "client": ("127.0.0.1", 12345)})
 
 
 class Result:
@@ -126,7 +131,7 @@ def test_player_c_is_blocked_before_any_owner_operation(operation) -> None:
 def test_owner_blocked_slot_deletion_uses_authenticated_owner(monkeypatch) -> None:
     captured = {}
     monkeypatch.setattr(owner_repository, "delete_blocked_slot", lambda user_id, slot_id: captured.update(user_id=user_id, slot_id=slot_id))
-    response = owner.remove_blocked_slot(BLOCKED_SLOT_B, AuthenticatedUser(id=OWNER_A))
+    response = owner.remove_blocked_slot(route_request(), BLOCKED_SLOT_B, AuthenticatedUser(id=OWNER_A))
     assert response.status_code == 204
     assert captured == {"user_id": OWNER_A, "slot_id": BLOCKED_SLOT_B}
 
@@ -134,7 +139,7 @@ def test_owner_blocked_slot_deletion_uses_authenticated_owner(monkeypatch) -> No
 def test_owner_route_translates_foreign_blocked_slot_to_not_found(monkeypatch) -> None:
     monkeypatch.setattr(owner_repository, "delete_blocked_slot", lambda user_id, slot_id: (_ for _ in ()).throw(OwnerResourceNotFoundError()))
     with pytest.raises(HTTPException) as error:
-        owner.remove_blocked_slot(BLOCKED_SLOT_B, AuthenticatedUser(id=OWNER_A))
+        owner.remove_blocked_slot(route_request(), BLOCKED_SLOT_B, AuthenticatedUser(id=OWNER_A))
     assert error.value.status_code == 404
 
 
@@ -149,6 +154,25 @@ def test_reservation_confirmation_and_cancellation_follow_arena_ownership(user_i
     else:
         with pytest.raises(OwnerResourceNotFoundError):
             owner_repository._owned_reservation(session, user_id, reservation_id)
+
+
+def test_owner_cannot_confirm_a_cancelled_reservation(monkeypatch) -> None:
+    class Transaction:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *_args):
+            return False
+
+    class Factory:
+        def begin(self):
+            return Transaction()
+
+    monkeypatch.setattr(owner_repository, "get_session_factory", lambda: Factory())
+    monkeypatch.setattr(owner_repository, "_owned_reservation", lambda *_args: {"id": RESERVATION_A, "status": "cancelled"})
+
+    with pytest.raises(ReservationStateError):
+        owner_repository.update_reservation_status(OWNER_A, RESERVATION_A, "confirmed")
 
 
 @pytest.mark.parametrize(
@@ -176,6 +200,7 @@ def test_owner_can_persist_only_a_logo_path_for_their_arena(monkeypatch) -> None
     monkeypatch.setattr(owner_repository, "update_arena", lambda user_id, arena_id, changes: captured.update(user_id=user_id, arena_id=arena_id, changes=changes) or {"id": arena_id, "logo_path": changes["logo_path"]})
 
     result = owner.patch_owner_arena_logo(
+        route_request(),
         ARENA_A,
         ArenaLogoUpdate(logo_path=f"arenas/{ARENA_A}/logo.webp"),
         AuthenticatedUser(id=OWNER_A),
@@ -189,6 +214,7 @@ def test_owner_can_persist_only_a_logo_path_for_their_arena(monkeypatch) -> None
 def test_owner_cannot_persist_a_logo_path_for_another_arena() -> None:
     with pytest.raises(HTTPException) as error:
         owner.patch_owner_arena_logo(
+            route_request(),
             ARENA_A,
             ArenaLogoUpdate(logo_path=f"arenas/{ARENA_B}/logo.webp"),
             AuthenticatedUser(id=OWNER_A),

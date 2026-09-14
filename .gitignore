@@ -14,7 +14,13 @@ coverage
 *.pyc
 .env
 .env.local
-.env.example
+.env.production
+.env.development
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
 services/api/.venv
 apps/mobile/.expo
 apps/mobile/dist
