@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     reservation_rate_limit_per_minute: PositiveInt = Field(default=10, alias="RESERVATION_RATE_LIMIT_PER_MINUTE")
     owner_mutation_rate_limit_per_minute: PositiveInt = Field(default=90, alias="OWNER_MUTATION_RATE_LIMIT_PER_MINUTE")
     max_request_body_bytes: PositiveInt = Field(default=65536, alias="MAX_REQUEST_BODY_BYTES")
+    email_notifications_enabled: bool = Field(default=False, alias="EMAIL_NOTIFICATIONS_ENABLED")
+    resend_api_key: str | None = Field(default=None, alias="RESEND_API_KEY")
+    email_from: str | None = Field(default=None, alias="EMAIL_FROM")
+    frontend_url: str = Field(default="http://localhost:3000", alias="FRONTEND_URL")
+    email_request_timeout_seconds: PositiveInt = Field(default=5, alias="EMAIL_REQUEST_TIMEOUT_SECONDS")
 
     model_config = SettingsConfigDict(
         env_file=".env",

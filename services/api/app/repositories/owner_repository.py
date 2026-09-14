@@ -408,7 +408,7 @@ def update_reservation_status(user_id: str, reservation_id: UUID, next_status: s
               where id=:reservation_id and status=:current_status returning id,status"""), {"status":next_status,"reservation_id":reservation_id,"current_status":reservation["status"]}).mappings().one_or_none()
             if row is None:
                 raise ReservationConflictError
-            return dict(row)
+            return {**dict(row), "previous_status": reservation["status"]}
     except IntegrityError as exc:
         raise ReservationConflictError from exc
 

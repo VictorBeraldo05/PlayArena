@@ -4,7 +4,7 @@ import logging
 from datetime import date
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 
 from app.core.config import settings
 from app.core.rate_limit import enforce_rate_limit
@@ -29,6 +29,7 @@ from app.schemas.owner import (
     SportResponse,
 )
 from app.schemas.agenda import BlockedSlotCreate, ManualReservationCreate
+from app.services.notifications import send_reservation_status_notification
 
 router = APIRouter(prefix="/owner", tags=["owner configuration"])
 sports_router = APIRouter(tags=["sports"])
@@ -323,19 +324,46 @@ def post_manual_reservation(request: Request, input_data: ManualReservationCreat
         translate_repository_error(exc)
 
 
+def change_reservation_status(
+    background_tasks: BackgroundTasks,
+    current_user: AuthenticatedUser,
+    reservation_id: UUID,
+    next_status: str,
+) -> dict:
+    changed = owner_repository.update_reservation_status(current_user.id, reservation_id, next_status)
+    background_tasks.add_task(
+        send_reservation_status_notification,
+        changed["id"],
+        changed["previous_status"],
+        changed["status"],
+    )
+    # Keep the public response contract limited to the persisted reservation state.
+    return {"id": changed["id"], "status": changed["status"]}
+
+
 @router.post("/reservations/{reservation_id}/confirm")
-def confirm_reservation(request: Request, reservation_id: UUID, current_user: AuthenticatedUser = Depends(require_arena_owner)) -> dict:
+def confirm_reservation(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    reservation_id: UUID,
+    current_user: AuthenticatedUser = Depends(require_arena_owner),
+) -> dict:
     enforce_owner_mutation_limit(request, current_user)
     try:
-        return owner_repository.update_reservation_status(current_user.id, reservation_id, "confirmed")
+        return change_reservation_status(background_tasks, current_user, reservation_id, "confirmed")
     except Exception as exc:  # noqa: BLE001
         translate_repository_error(exc)
 
 
 @router.post("/reservations/{reservation_id}/cancel")
-def cancel_reservation(request: Request, reservation_id: UUID, current_user: AuthenticatedUser = Depends(require_arena_owner)) -> dict:
+def cancel_reservation(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    reservation_id: UUID,
+    current_user: AuthenticatedUser = Depends(require_arena_owner),
+) -> dict:
     enforce_owner_mutation_limit(request, current_user)
     try:
-        return owner_repository.update_reservation_status(current_user.id, reservation_id, "cancelled")
+        return change_reservation_status(background_tasks, current_user, reservation_id, "cancelled")
     except Exception as exc:  # noqa: BLE001
         translate_repository_error(exc)

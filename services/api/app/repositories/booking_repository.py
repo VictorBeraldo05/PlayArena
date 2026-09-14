@@ -171,3 +171,26 @@ def list_player_reservations(user_id: str) -> list[dict[str, Any]]:
             where r.user_id = :user_id order by r.start_at desc
         """), {"user_id": user_id}).mappings()
         return [dict(row) for row in rows]
+
+
+def get_reservation_notification(reservation_id: UUID) -> dict[str, Any] | None:
+    """Load server-owned reservation data for a player status notification."""
+    factory = get_session_factory()
+    with factory() as session:
+        row = session.execute(text("""
+            select r.id, u.email as recipient_email,
+                   a.name as arena_name, c.name as court_name,
+                   coalesce((
+                     select string_agg(s.name, ', ' order by s.name)
+                     from public.court_sports cs
+                     join public.sports s on s.id = cs.sport_id
+                     where cs.court_id = r.court_id
+                   ), 'Modalidade não informada') as sport_name,
+                   r.start_at, r.end_at, r.price
+            from public.reservations r
+            join public.arenas a on a.id = r.arena_id
+            join public.courts c on c.id = r.court_id
+            left join auth.users u on u.id = r.user_id
+            where r.id = :reservation_id
+        """), {"reservation_id": reservation_id}).mappings().one_or_none()
+        return dict(row) if row else None
