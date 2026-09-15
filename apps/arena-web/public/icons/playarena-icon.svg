@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(256 245) rotate(90) scale(218)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8FFF3C" stop-opacity=".2"/>
+      <stop offset="1" stop-color="#8FFF3C" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="lime" x1="158" y1="131" x2="355" y2="383" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#D7FFB7"/>
+      <stop offset=".5" stop-color="#8FFF3C"/>
+      <stop offset="1" stop-color="#5AD420"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="#080D14"/>
+  <rect width="512" height="512" fill="url(#glow)"/>
+  <circle cx="256" cy="256" r="204" stroke="#8FFF3C" stroke-opacity=".13" stroke-width="2"/>
+  <circle cx="256" cy="256" r="166" stroke="#fff" stroke-opacity=".08" stroke-width="2"/>
+  <rect x="147" y="103" width="218" height="306" rx="72" stroke="#DFFFC9" stroke-opacity=".46" stroke-width="11"/>
+  <path d="M256 103v306M147 256h218" stroke="#DFFFC9" stroke-opacity=".34" stroke-width="8"/>
+  <circle cx="256" cy="256" r="49" stroke="#DFFFC9" stroke-opacity=".42" stroke-width="8"/>
+  <path d="m214 333 42-158 42 158m-63-61h42" stroke="url(#lime)" stroke-linecap="round" stroke-linejoin="round" stroke-width="19"/>
+  <path d="m247 238 47 18-47 18v-36Z" fill="#fff"/>
+  <circle cx="364" cy="148" r="10" fill="#8FFF3C"/>
+</svg>

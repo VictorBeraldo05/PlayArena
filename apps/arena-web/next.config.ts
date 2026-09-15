@@ -34,6 +34,12 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   async headers() {
     return [{
+      source: '/sw.js',
+      headers: [
+        { key: 'Cache-Control', value: 'no-cache, no-store, must-revalidate' },
+        { key: 'Service-Worker-Allowed', value: '/' },
+      ],
+    }, {
       source: '/:path*',
       headers: [
         { key: 'Content-Security-Policy', value: contentSecurityPolicy },

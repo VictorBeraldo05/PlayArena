@@ -4,6 +4,7 @@ import { FormEvent, Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { AppShell } from '../../../components/app-shell';
 import { PlayerBottomNav as PlayerNavigation } from '../../../components/player-bottom-nav';
+import { PwaInstallCard } from '../../../components/pwa-install-card';
 import { useAuth } from '../../../components/use-auth';
 
 export default function PlayerProfilePage() {
@@ -42,5 +43,5 @@ function PlayerProfileContent() {
 
   const visibleName = name || profile?.full_name || '';
   const visiblePhone = phone || profile?.phone || '';
-  return <AppShell eyebrow="Conta" title="Seu perfil" subtitle="Mantenha seus dados atualizados."><PlayerNavigation /><form className="rounded-[18px] bg-[#111923] p-6" onSubmit={save}><label className="block text-sm font-bold">Nome completo<input className="mt-2" onChange={(event) => setName(event.target.value)} required value={visibleName} /></label><label className="mt-4 block text-sm font-bold">WhatsApp<input className="mt-2" inputMode="tel" onChange={(event) => setPhone(event.target.value)} required value={visiblePhone} /></label><p className="mt-4 text-sm text-[#9DA7B3]">{session?.user.email}</p>{errorMessage ? <p className="mt-4 rounded-xl bg-[#FF4B4B]/10 p-3 text-sm text-[#FFB3B3]">Não foi possível salvar seus dados.</p> : null}<button className="button mt-6 w-full" disabled={busy}>{busy ? 'Salvando...' : 'Salvar dados'}</button></form><button className="mt-5 min-h-[52px] w-full rounded-xl border border-[#FF4B4B]/50 text-sm font-bold text-[#FF4B4B] disabled:opacity-60" disabled={busy} onClick={() => void leave()}>{busy ? 'Saindo...' : 'Sair da conta'}</button></AppShell>;
+  return <AppShell eyebrow="Conta" title="Seu perfil" subtitle="Mantenha seus dados atualizados."><PlayerNavigation /><form className="rounded-[18px] bg-[#111923] p-6" onSubmit={save}><label className="block text-sm font-bold">Nome completo<input className="mt-2" onChange={(event) => setName(event.target.value)} required value={visibleName} /></label><label className="mt-4 block text-sm font-bold">WhatsApp<input className="mt-2" inputMode="tel" onChange={(event) => setPhone(event.target.value)} required value={visiblePhone} /></label><p className="mt-4 text-sm text-[#9DA7B3]">{session?.user.email}</p>{errorMessage ? <p className="mt-4 rounded-xl bg-[#FF4B4B]/10 p-3 text-sm text-[#FFB3B3]">Não foi possível salvar seus dados.</p> : null}<button className="button mt-6 w-full" disabled={busy}>{busy ? 'Salvando...' : 'Salvar dados'}</button></form><PwaInstallCard /><button className="mt-5 min-h-[52px] w-full rounded-xl border border-[#FF4B4B]/50 text-sm font-bold text-[#FF4B4B] disabled:opacity-60" disabled={busy} onClick={() => void leave()}>{busy ? 'Saindo...' : 'Sair da conta'}</button></AppShell>;
 }
