@@ -1,4 +1,4 @@
-const STATIC_CACHE = 'playarena-static-v1';
+const STATIC_CACHE = 'playarena-static-v2';
 
 function isCacheableAsset(pathname) {
   return pathname !== '/sw.js'
