@@ -1,12 +1,24 @@
 'use client';
 
 import Image from 'next/image';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+
+import { authenticatedHome } from '../lib/auth-routing';
+import { useAuth } from '../components/use-auth';
 
 export default function IndexPage() {
+  const { session, profile, ownedArenas, isLoading } = useAuth();
   const router = useRouter();
   const [starting, setStarting] = useState(false);
+  const destination = session ? authenticatedHome(profile?.role, ownedArenas.length) : null;
+
+  useEffect(() => {
+    if (!isLoading && destination) router.replace(destination);
+  }, [destination, isLoading, router]);
+
+  if (isLoading || session) return <EntryLoading />;
 
   function start() {
     if (starting) return;
@@ -23,7 +35,8 @@ export default function IndexPage() {
     <div aria-hidden="true" className="landing-night-overlay absolute inset-0 z-[6]" /><div aria-hidden="true" className="landing-night-field absolute inset-x-0 bottom-0 z-[6]" />
 
     <div className="relative z-10 mx-auto grid min-h-[100dvh] w-full max-w-6xl grid-rows-[auto_auto_1fr_auto] px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1.5rem,env(safe-area-inset-top))] sm:px-8">
-      <header className="landing-reveal landing-reveal-brand text-center">
+      <header className="landing-reveal landing-reveal-brand relative text-center">
+        <Link className="absolute right-0 top-0 inline-flex min-h-10 items-center rounded-xl border border-white/15 bg-[#080D14]/55 px-3 text-sm font-bold text-[#D7DEE7] backdrop-blur-md transition hover:border-[#8FFF3C]/45 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-[#8FFF3C]" href="/login">Entrar</Link>
         <div><b className="text-sm font-black uppercase tracking-[0.16em] text-[#8FFF3C]">PlayArena</b></div>
         <p className="mt-4 text-[10px] font-bold uppercase tracking-[0.24em] text-white/75">Encontre. Reserve. Jogue.</p>
       </header>
@@ -39,6 +52,10 @@ export default function IndexPage() {
       </div>
     </div>
   </main>;
+}
+
+function EntryLoading() {
+  return <main aria-busy="true" className="grid min-h-[100dvh] place-items-center bg-[#080D14] text-white"><div aria-live="polite" className="playarena-loader-mark relative"><span className="sr-only">Verificando sua sessão</span><strong aria-hidden="true">PLAY<span>ARENA</span></strong><i aria-hidden="true"><b /></i></div></main>;
 }
 
 function Benefit({ icon, title, text }: { icon: 'calendar' | 'bolt' | 'pin'; title: string; text: string }) { const paths={calendar:<><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/></>,bolt:<path d="m13 2-9 12h7l-1 8 9-12h-7z"/>,pin:<><path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2"/></>}; return <article className="rounded-2xl border border-white/10 bg-[#080D14]/70 p-3 text-center backdrop-blur-md"><svg aria-hidden="true" className="mx-auto h-6 w-6 text-[#8FFF3C]" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">{paths[icon]}</svg><b className="mt-2 block text-sm">{title}</b><span className="mt-1 block text-[10px] leading-3 text-[#9DA7B3]">{text}</span></article>; }

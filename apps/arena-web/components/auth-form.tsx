@@ -4,6 +4,7 @@ import Image from 'next/image';
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { formatTimeBR } from '../lib/format';
+import { authenticatedHome, safeInternalPath } from '../lib/auth-routing';
 import { useAuth } from './use-auth';
 
 type Mode = 'login' | 'signup';
@@ -22,8 +23,9 @@ export function AuthForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const returnTo = searchParams.get('returnTo');
-  const safeReturnTo = returnTo?.startsWith('/') && !returnTo.startsWith('//') ? returnTo : null;
+  const safeReturnTo = safeInternalPath(returnTo);
   const { signIn, signUp, errorMessage, clearError, session, isLoading, profile, ownedArenas } = useAuth();
+  const destination = safeReturnTo ?? authenticatedHome(profile?.role, ownedArenas.length);
   const [mode, setMode] = useState<Mode>('login');
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
@@ -39,18 +41,11 @@ export function AuthForm() {
   const submissionLock = useRef(false);
 
   useEffect(() => {
-    if (!isLoading && session) {
-      if (profile?.role === 'player') {
-        router.replace(safeReturnTo ?? '/buscar');
-        return;
-      }
-      if (profile?.role === 'arena_owner' && ownedArenas.length === 0) {
-        router.replace('/onboarding');
-        return;
-      }
-      router.replace(safeReturnTo ?? '/dashboard');
-    }
-  }, [isLoading, ownedArenas.length, profile?.role, router, safeReturnTo, session]);
+    if (isLoading || !session) return;
+    if (destination) router.replace(destination);
+  }, [destination, isLoading, router, session]);
+
+  if (isLoading || (session && destination)) return <AuthLoading />;
 
   function changeMode(nextMode: Mode) {
     if (isSubmitting) return;
@@ -123,6 +118,10 @@ export function AuthForm() {
       </div>
     </main>
   );
+}
+
+function AuthLoading() {
+  return <main aria-busy="true" className="grid min-h-[100dvh] place-items-center bg-[#080D14] text-white"><div aria-live="polite" className="playarena-loader-mark relative"><span className="sr-only">Verificando sua sessão</span><strong aria-hidden="true">PLAY<span>ARENA</span></strong><i aria-hidden="true"><b /></i></div></main>;
 }
 
 function ReservationSummary({ intent, image, imageFailed, onImageError }: { intent: ReservationIntent; image?: string; imageFailed: boolean; onImageError: () => void }) {
