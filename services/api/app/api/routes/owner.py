@@ -294,12 +294,9 @@ def remove_blocked_slot(request: Request, blocked_slot_id: UUID, current_user: A
 def get_dashboard_summary(current_user: AuthenticatedUser = Depends(require_arena_owner)) -> dict:
     summary = owner_repository.get_dashboard_summary(current_user.id)
     logger.info(
-        "[DASHBOARD_SUMMARY] owner_id=%s today=%s week=%s revenue=%s occupancy=%s pending=%s next=%s",
-        current_user.id,
+        "[DASHBOARD_SUMMARY] loaded today=%s week=%s pending=%s next=%s",
         summary["reservations_today"],
         summary["reservations_week"],
-        summary["app_revenue"],
-        summary["occupancy_today"],
         summary["pending_count"],
         len(summary["next_reservations"]),
     )

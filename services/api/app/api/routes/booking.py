@@ -41,7 +41,7 @@ def require_player(
     profile_role_value: str = Depends(get_current_role),
 ) -> AuthenticatedUser:
     if profile_role_value != "player":
-        logger.info("[PLAYER_RESERVATIONS] access denied user_id=%s role=%s", current_user.id, profile_role_value)
+        logger.info("[PLAYER_RESERVATIONS] access denied role=%s", profile_role_value)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Player access required.")
     return current_user
 
@@ -50,7 +50,7 @@ def get_public_arenas(city: str | None = None) -> list[dict]:
     try:
         return public_arenas(city)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("[PLAYER_CATALOG] failed city=%s type=%s message=%s", city, type(exc).__name__, str(exc))
+        logger.exception("[PLAYER_CATALOG] failed type=%s", type(exc).__name__)
         raise
 
 @router.get("/arenas/{arena_id}")
@@ -125,22 +125,12 @@ def get_player_reservations(current_user: AuthenticatedUser = Depends(require_pl
         reservations = list_player_reservations(current_user.id)
     except Exception as exc:  # noqa: BLE001
         logger.exception(
-            "[PLAYER_RESERVATIONS] failed user_id=%s type=%s message=%s",
-            current_user.id,
+            "[PLAYER_RESERVATIONS] failed type=%s",
             type(exc).__name__,
-            str(exc),
         )
         raise
 
-    logger.info(
-        "[PLAYER_RESERVATIONS] user_id=%s count=%d ids=%s statuses=%s start_at=%s end_at=%s",
-        current_user.id,
-        len(reservations),
-        [str(reservation["id"]) for reservation in reservations],
-        [reservation["status"] for reservation in reservations],
-        [str(reservation["start_at"]) for reservation in reservations],
-        [str(reservation["end_at"]) for reservation in reservations],
-    )
+    logger.info("[PLAYER_RESERVATIONS] loaded count=%d", len(reservations))
     return reservations
 
 

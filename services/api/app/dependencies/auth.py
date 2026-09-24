@@ -30,10 +30,8 @@ def get_current_role(current_user: AuthenticatedUser = Depends(get_current_user)
         profile_role = get_profile_role(current_user.id)
     except Exception as exc:  # noqa: BLE001
         logger.exception(
-            "[PROFILE] failed to load profile for user=%s; exception=%s message=%s",
-            current_user.id,
+            "[PROFILE] failed to load profile; exception=%s",
             type(exc).__name__,
-            str(exc),
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

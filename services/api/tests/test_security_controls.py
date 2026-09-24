@@ -1,12 +1,14 @@
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
 
 from app.api.routes import owner as owner_routes
-from app.core.config import DEFAULT_WEB_ORIGINS, settings
+from app.core.config import DEFAULT_WEB_ORIGINS, Settings, settings
 from app.core.rate_limit import InMemoryRateLimiter
-from app.schemas.analytics import AnalyticsEventCreate
+from app.schemas.analytics import AnalyticsEventCreate, AnalyticsEventName
 from app.schemas.booking import PlayerReservationCreate
 
 
@@ -18,6 +20,12 @@ def test_api_sets_private_response_security_headers(create_client) -> None:
     assert response.headers["referrer-policy"] == "no-referrer"
     assert response.headers["cache-control"] == "no-store"
     assert {"Authorization", "Origin"}.issubset(set(response.headers["vary"].replace(" ", "").split(",")))
+
+
+def test_api_docs_are_disabled_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("API_DOCS_ENABLED", raising=False)
+
+    assert Settings(_env_file=None).api_docs_enabled is False
 
 
 @pytest.mark.parametrize("origin", DEFAULT_WEB_ORIGINS)
@@ -102,6 +110,13 @@ def test_analytics_rejects_pii_and_unknown_properties() -> None:
     payload["properties"] = {"unexpected": "value"}
     with pytest.raises(ValidationError):
         AnalyticsEventCreate(**payload)
+
+
+def test_analytics_database_constraint_accepts_every_api_event() -> None:
+    migration = Path(__file__).parents[3] / "supabase" / "migrations" / "202609170001_allow_arena_schedule_analytics.sql"
+    sql = migration.read_text(encoding="utf-8")
+
+    assert all(f"'{event_name}'" in sql for event_name in get_args(AnalyticsEventName))
 
 
 def test_player_reservation_rejects_past_start_time() -> None:

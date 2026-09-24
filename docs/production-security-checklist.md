@@ -13,7 +13,7 @@
 - [ ] Configurar somente no Render: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` se usado, `DATABASE_URL` e `WEB_ORIGINS`.
 - [ ] Usar `WEB_ORIGINS=https://playarena-phi.vercel.app,https://useplayarena.com.br,https://www.useplayarena.com.br`, em texto separado por vírgulas e sem JSON.
 - [ ] Confirmar no startup o log `CORS allowed origins: [...]` com exatamente as três origens de produção.
-- [ ] Definir `API_DOCS_ENABLED=false` para piloto publico.
+- [ ] Definir `API_DOCS_ENABLED=false` para piloto publico. O codigo agora tambem adota `false` por default; confirmar `404` apos o deploy.
 - [ ] Manter `TRUST_PROXY_HEADERS=false` ate confirmar que o Render normaliza `X-Forwarded-For`.
 - [ ] Comecar com analytics 120/min/IP, disponibilidade 60/min/IP, reservas 10/min/usuario e mutacoes owner 90/min/usuario.
 - [ ] Adicionar WAF/limite na borda antes de escalar multiplas instancias Render.
@@ -26,6 +26,7 @@
 - [ ] Definir `https://useplayarena.com.br` como canonico e redirecionar `www`, ou documentar a decisao inversa.
 - [ ] Verificar headers finais: CSP, HSTS, nosniff, frame deny, referrer e permissions policy.
 - [ ] Confirmar que respostas da API privadas possuem `Cache-Control: no-store`.
+- [ ] Confirmar dominio canonico no HTML. A landing define canonical para `https://useplayarena.com.br`; hoje o Vercel redireciona o apex para `www`, portanto a configuracao deve ser invertida antes do deploy web.
 
 ## Supabase e Google Cloud
 

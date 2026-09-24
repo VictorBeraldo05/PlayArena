@@ -27,6 +27,7 @@ def platform_overview(days: int) -> dict[str, Any]:
             (select count(*) from public.analytics_events e cross join bounds b where e.event_name = 'availability_searched' and e.occurred_at >= b.start_at) as searches,
             (select count(*) from public.reservations r cross join bounds b where r.created_at >= b.start_at) as reservations,
             (select coalesce(sum(r.price) filter (where r.status in ('confirmed','completed')), 0) from public.reservations r cross join bounds b where r.created_at >= b.start_at) as gmv,
+            (select coalesce(avg(r.price) filter (where r.status in ('confirmed','completed')), 0) from public.reservations r cross join bounds b where r.created_at >= b.start_at) as average_ticket,
             (select coalesce(avg(extract(epoch from (r.confirmed_at-r.created_at))/60) filter (where r.confirmed_at is not null), 0) from public.reservations r cross join bounds b where r.created_at >= b.start_at) as confirmation_minutes
         """), params).mappings().one()
         funnel = session.execute(text("""

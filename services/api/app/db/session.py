@@ -11,10 +11,14 @@ SAO_PAULO_TIME_ZONE = "America/Sao_Paulo"
 
 
 def get_sqlalchemy_database_url(database_url: str) -> str:
-    """Select the installed psycopg v3 driver for PostgreSQL URLs."""
+    """Select psycopg v3 and require TLS for hosted Supabase databases."""
     url = make_url(database_url)
     if url.drivername == "postgresql":
         url = url.set(drivername="postgresql+psycopg")
+    host = (url.host or "").lower()
+    is_supabase = host.endswith(".supabase.com") or host.endswith(".supabase.co")
+    if is_supabase and "sslmode" not in url.query:
+        url = url.update_query_dict({"sslmode": "require"})
     return url.render_as_string(hide_password=False)
 
 

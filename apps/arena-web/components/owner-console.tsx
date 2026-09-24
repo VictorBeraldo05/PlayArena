@@ -3,7 +3,7 @@
 
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import { Arena, Court, OpeningHour, PricingRule, Sport } from '@playarena/types';
-import { apiRequest, apiRequestWithMeta } from '../lib/api';
+import { apiRequest } from '../lib/api';
 import { ARENA_ASSETS_BUCKET, ARENA_LOGO_MIME_TYPES, MAX_ARENA_LOGO_BYTES, arenaLogoPath, getArenaLogoUrl } from '../lib/arena-logo';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './use-auth';
@@ -20,7 +20,7 @@ export function OwnerConsole({ view }: { view: View }) {
   async function load() { if (!arena || !session) return; try { setError(null); const token=session.access_token;
     if(view==='overview') setData(await apiRequest(`/owner/arenas/${arena.id}/dashboard`,token));
     if(view==='arena') setData(await apiRequest(`/owner/arenas/${arena.id}`,token));
-    if(view==='courts'){setSportsLoading(true);setSportsError(null);const [items, response]=await Promise.all([apiRequest<Court[]>(`/owner/arenas/${arena.id}/courts`,token),apiRequestWithMeta<Sport[]>('/sports',token)]);console.info('[PlayArena] sports loaded',{status:response.status,count:response.data.length,names:response.data.map(sport=>sport.name)});setCourts(items);setSports(response.data);setData(items);setSportsLoading(false)}
+    if(view==='courts'){setSportsLoading(true);setSportsError(null);const [items, availableSports]=await Promise.all([apiRequest<Court[]>(`/owner/arenas/${arena.id}/courts`,token),apiRequest<Sport[]>('/sports',token)]);setCourts(items);setSports(availableSports);setData(items);setSportsLoading(false)}
     if(view==='hours') setData(await apiRequest(`/owner/arenas/${arena.id}/opening-hours`,token));
     if(view==='prices'){const [rules, items]=await Promise.all([apiRequest<PricingRule[]>(`/owner/arenas/${arena.id}/pricing-rules`,token),apiRequest<Court[]>(`/owner/arenas/${arena.id}/courts`,token)]);setCourts(items);setData(rules)}
   } catch(e){if(view==='courts'){setSportsLoading(false);setSportsError('Não foi possível carregar as modalidades.')}setError(e instanceof Error?e.message:'Nao foi possivel carregar esta tela.')} }

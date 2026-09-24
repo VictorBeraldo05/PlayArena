@@ -25,7 +25,11 @@ No Render, defina exatamente `WEB_ORIGINS=https://playarena-phi.vercel.app,https
 
 No startup, confira o log sem segredos `CORS allowed origins: [...]` e confirme que ele lista as três origens de produção. Se `WEB_ORIGINS` estiver vazio ou ausente, a API usa o fallback seguro de localhost e das origens PlayArena conhecidas.
 
-No Render, defina `API_DOCS_ENABLED=false` no piloto publico. Defina `TRUST_PROXY_HEADERS=true` somente depois de confirmar que o proxy do Render sobrescreve `X-Forwarded-For`. A `DATABASE_URL` do Supabase deve exigir TLS, por exemplo com `sslmode=require`.
+No Render, defina `API_DOCS_ENABLED=false` no piloto publico. A API tambem usa `false` como default seguro; para desenvolvimento local, habilite explicitamente apenas quando precisar dos docs. Defina `TRUST_PROXY_HEADERS=true` somente depois de confirmar que o proxy do Render sobrescreve `X-Forwarded-For`.
+
+A `DATABASE_URL` do Supabase deve incluir `sslmode=require`. Como defesa adicional, a API acrescenta esse parametro quando reconhece um host Supabase e nenhum `sslmode` foi informado; localhost continua sem TLS automatico.
+
+Depois do deploy, confirme que `/docs`, `/redoc` e `/openapi.json` retornam `404`, que `/health` retorna apenas o payload minimo e que a conexao PostgreSQL negociou TLS. Consulte `go-live-checklist.md` para os probes completos.
 
 ## Mobile
 

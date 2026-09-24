@@ -16,7 +16,7 @@ O codigo esta **GO WITH CONDITIONS** para um piloto somente depois de aplicar a 
 | Analytics aceitava propriedades arbitrarias | Medium | Corrigido | PII e poluicao de metricas | Schema estrito, allowlist e limite de 2 KB |
 | `.env.example` ignorado pelo Git | Low | Corrigido | Contrato de configuracao podia deixar de ser versionado | Removido do `.gitignore`; inclua-o no proximo commit |
 | Google key em `.env` local mobile, sem consumo por codigo | Low | Pendente manual | Nao esta rastreada nem e embutida sem `EXPO_PUBLIC_`, mas nao deve ficar no cliente | Remover do ambiente mobile e rotacionar se ja foi usada em build |
-| Docs OpenAPI publicos por padrao | Low | Configuravel | Enumera endpoints sem conceder acesso | `API_DOCS_ENABLED=false` em producao |
+| Docs OpenAPI publicos por padrao | Low | Corrigido, requer deploy | Enumera endpoints sem conceder acesso | Default seguro `false` e `API_DOCS_ENABLED=false` em producao |
 | Dependencias Expo/mobile moderadas | Medium | Pendente | Toolchain Expo/Xcode | Atualizar em branch dedicada; correcao sugerida e major/incompativel |
 
 ## Controles confirmados

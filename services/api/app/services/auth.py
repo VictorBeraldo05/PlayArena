@@ -5,7 +5,6 @@ from functools import lru_cache
 from typing import Any
 
 import httpx
-import jwt
 from fastapi import HTTPException, status
 
 from app.core.config import settings
@@ -22,11 +21,10 @@ class SupabaseAuthVerifier:
         self.supabase_anon_key = supabase_anon_key
 
     def verify_access_token(self, token: str) -> AuthenticatedUser:
-        token_metadata = self._token_metadata(token)
         logger.info("[AUTH] validating Supabase access token")
 
         if not self.user_url or not self.supabase_anon_key:
-            self._log_failure(token_metadata, "Supabase Auth configuration is incomplete")
+            self._log_failure("Supabase Auth configuration is incomplete")
             raise self._invalid_token_error()
 
         try:
@@ -39,24 +37,24 @@ class SupabaseAuthVerifier:
                     },
                 )
         except httpx.HTTPError as exc:
-            self._log_failure(token_metadata, f"Supabase Auth request failed: {type(exc).__name__}")
+            self._log_failure(f"Supabase Auth request failed: {type(exc).__name__}")
             raise self._invalid_token_error() from exc
 
         logger.info("[AUTH] Supabase /auth/v1/user status=%s", response.status_code)
 
         if response.status_code != status.HTTP_200_OK:
-            self._log_failure(token_metadata, f"Supabase Auth rejected token with HTTP {response.status_code}")
+            self._log_failure(f"Supabase Auth rejected token with HTTP {response.status_code}")
             raise self._invalid_token_error()
 
         try:
             user: dict[str, Any] = response.json()
         except ValueError as exc:
-            self._log_failure(token_metadata, "Supabase Auth returned an invalid user response")
+            self._log_failure("Supabase Auth returned an invalid user response")
             raise self._invalid_token_error() from exc
 
         user_id = user.get("id")
         if not isinstance(user_id, str) or not user_id:
-            self._log_failure(token_metadata, "Supabase Auth response did not include a user id")
+            self._log_failure("Supabase Auth response did not include a user id")
             raise self._invalid_token_error()
 
         authenticated_user = AuthenticatedUser(
@@ -64,7 +62,6 @@ class SupabaseAuthVerifier:
             email=user.get("email") if isinstance(user.get("email"), str) else None,
             auth_role=user.get("role") if isinstance(user.get("role"), str) else None,
         )
-        logger.info("[AUTH] authenticated user id=%s", authenticated_user.id)
         return authenticated_user
 
     @staticmethod
@@ -75,33 +72,8 @@ class SupabaseAuthVerifier:
         )
 
     @staticmethod
-    def _token_metadata(token: str) -> dict[str, str | None]:
-        """Decode unverified metadata for logs only; it is never used for authorization."""
-        metadata: dict[str, str | None] = {"algorithm": None, "kid": None, "issuer": None}
-
-        try:
-            header = jwt.get_unverified_header(token)
-            claims = jwt.decode(
-                token,
-                options={"verify_signature": False, "verify_exp": False, "verify_aud": False},
-            )
-            metadata["algorithm"] = header.get("alg")
-            metadata["kid"] = header.get("kid")
-            metadata["issuer"] = claims.get("iss")
-        except jwt.PyJWTError:
-            pass
-
-        return metadata
-
-    @staticmethod
-    def _log_failure(token_metadata: dict[str, str | None], reason: str) -> None:
-        logger.warning(
-            "Supabase access-token validation failed: %s; algorithm=%s kid=%s issuer=%s",
-            reason,
-            token_metadata["algorithm"],
-            token_metadata["kid"],
-            token_metadata["issuer"],
-        )
+    def _log_failure(reason: str) -> None:
+        logger.warning("Supabase access-token validation failed: %s", reason)
 
 
 @lru_cache
