@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from uuid import UUID
 
@@ -34,6 +35,7 @@ from app.services.payments.service import (
 router = APIRouter(tags=["payments and wallet"])
 webhook_router = APIRouter(prefix="/payments/webhooks", tags=["payment webhooks"])
 admin_router = APIRouter(prefix="/admin/payments", tags=["payment operations"])
+logger = logging.getLogger(__name__)
 
 
 def require_player(
@@ -184,7 +186,21 @@ async def mercado_pago_payment_webhook(
     enforce_rate_limit(request, scope="payment-webhook", limit=settings.payment_webhook_rate_limit_per_minute)
     payload = await request.body()
     data_id = request.query_params.get("data.id")
+    if settings.payment_environment == "test":
+        logger.warning(
+            "mercado_pago.webhook.request path=%r query_keys=%r query_data_id=%r query_type=%r "
+            "x_request_id=%r x_signature_present=%s webhook_secret_configured=%s",
+            request.url.path,
+            list(request.query_params.keys()),
+            data_id,
+            topic,
+            x_request_id,
+            str(bool(x_signature)).lower(),
+            str(bool(settings.mercado_pago_webhook_secret)).lower(),
+        )
     if not data_id or len(data_id) > 120:
+        if settings.payment_environment == "test":
+            logger.warning("mercado_pago.webhook.rejected reason=missing_data_id")
         raise HTTPException(status_code=401, detail="Invalid payment webhook.")
     try:
         return process_webhook(
