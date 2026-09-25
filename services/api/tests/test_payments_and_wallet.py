@@ -48,6 +48,9 @@ def payment_row(**changes) -> dict:
         "provider_payment_id": "sandbox_payment",
         "status": "pending",
         "amount": Decimal("5.00"),
+        "wallet_amount": Decimal("0.00"),
+        "provider_amount": Decimal("5.00"),
+        "use_wallet_balance": False,
         "currency": "BRL",
         "arena_id": UUID("10000000-0000-0000-0000-000000000001"),
         "court_id": UUID("20000000-0000-0000-0000-000000000001"),
@@ -297,6 +300,34 @@ def test_provider_payment_arriving_after_payment_expiration_is_still_credited(mo
     assert any("insert into public.wallet_transactions" in sql for sql in session.sql)
 
 
+def test_late_mixed_payment_credits_wallet_and_provider_parts_once(monkeypatch) -> None:
+    session = WebhookSession(
+        payment_row(
+            status="expired",
+            hold_status="expired",
+            hold_expired=True,
+            wallet_amount=Decimal("2.00"),
+            provider_amount=Decimal("3.00"),
+            use_wallet_balance=True,
+        )
+    )
+    monkeypatch.setattr(payment_repository, "get_session_factory", lambda: TransactionFactory(session))
+
+    result = payment_repository.process_provider_event(
+        "sandbox",
+        webhook_event(amount="3.00"),
+        b"late-mixed-payment",
+    )
+
+    assert result["status"] == "paid"
+    credit_amounts = [
+        params["amount"]
+        for sql, params in zip(session.sql, session.params, strict=True)
+        if "insert into public.wallet_transactions" in sql and params
+    ]
+    assert credit_amounts == [Decimal("2.00"), Decimal("3.00")]
+
+
 def test_concurrent_slot_conflict_protects_payment_with_credit(monkeypatch) -> None:
     session = WebhookSession(conflict=True)
     monkeypatch.setattr(payment_repository, "get_session_factory", lambda: TransactionFactory(session))
@@ -312,6 +343,77 @@ def test_checkout_schema_rejects_price_and_amount_tampering() -> None:
         CheckoutCreate(**checkout_payload(), amount="0.01")
     with pytest.raises(ValidationError):
         CheckoutCreate(**checkout_payload(), price="1.00")
+
+
+@pytest.mark.parametrize(
+    ("balance", "use_wallet", "wallet_amount", "provider_amount"),
+    [
+        ("0.00", False, "0.00", "5.00"),
+        ("0.00", True, "0.00", "5.00"),
+        ("2.00", True, "2.00", "3.00"),
+        ("5.00", True, "5.00", "0.00"),
+        ("20.00", True, "5.00", "0.00"),
+    ],
+)
+def test_server_calculates_wallet_and_provider_split(
+    balance,
+    use_wallet,
+    wallet_amount,
+    provider_amount,
+) -> None:
+    result = payment_repository.split_checkout_amounts(
+        Decimal(balance),
+        Decimal("5.00"),
+        use_wallet_balance=use_wallet,
+    )
+
+    assert result == (Decimal(wallet_amount), Decimal(provider_amount))
+
+
+def test_mixed_provider_webhook_validates_only_external_amount(monkeypatch) -> None:
+    session = WebhookSession(
+        payment_row(
+            wallet_amount=Decimal("2.00"),
+            provider_amount=Decimal("3.00"),
+            use_wallet_balance=True,
+        )
+    )
+    monkeypatch.setattr(payment_repository, "get_session_factory", lambda: TransactionFactory(session))
+
+    result = payment_repository.process_provider_event(
+        "mercado_pago",
+        webhook_event(amount="3.00", external_reference=str(PAYMENT_ID)),
+        b"mixed-approved",
+    )
+
+    assert result["reservation_id"] == "reservation-id"
+    assert not any("checkout-wallet-release" in str(params) for params in session.params)
+
+
+def test_mixed_provider_failure_releases_wallet_part_once(monkeypatch) -> None:
+    session = WebhookSession(
+        payment_row(
+            wallet_amount=Decimal("2.00"),
+            provider_amount=Decimal("3.00"),
+            use_wallet_balance=True,
+        )
+    )
+    monkeypatch.setattr(payment_repository, "get_session_factory", lambda: TransactionFactory(session))
+
+    result = payment_repository.process_provider_event(
+        "mercado_pago",
+        webhook_event(status="failed", amount="3.00", external_reference=str(PAYMENT_ID)),
+        b"mixed-failed",
+    )
+
+    assert result["status"] == "failed"
+    wallet_release = [
+        params
+        for params in session.params
+        if params and str(params.get("idempotency_key", "")).startswith("checkout-wallet-release:")
+    ]
+    assert len(wallet_release) == 1
+    assert wallet_release[0]["amount"] == Decimal("2.00")
 
 
 def test_checkout_route_sources_payer_email_from_authenticated_user(monkeypatch) -> None:
@@ -361,6 +463,7 @@ def test_provider_creation_failure_marks_payment_failed(monkeypatch) -> None:
         "provider": "sandbox",
         "status": "pending",
         "amount": Decimal("5.00"),
+        "provider_amount": Decimal("5.00"),
         "currency": "BRL",
         "expires_at": START_AT,
     }
@@ -391,6 +494,7 @@ def test_indeterminate_provider_creation_preserves_payment_and_hold(monkeypatch)
         "provider": "mercado_pago",
         "status": "pending",
         "amount": Decimal("5.00"),
+        "provider_amount": Decimal("5.00"),
         "currency": "BRL",
         "expires_at": START_AT,
     }
@@ -418,6 +522,7 @@ def test_provider_success_attaches_provider_reference(monkeypatch) -> None:
         "provider": "sandbox",
         "status": "pending",
         "amount": Decimal("5.00"),
+        "provider_amount": Decimal("5.00"),
         "currency": "BRL",
         "expires_at": START_AT,
     }
@@ -428,6 +533,103 @@ def test_provider_success_attaches_provider_reference(monkeypatch) -> None:
     result = service.create_checkout(PLAYER.id, checkout_payload())
 
     assert result["provider_payment_id"] == "sandbox_payment"
+
+
+def test_mixed_checkout_charges_provider_only_for_remaining_amount(monkeypatch) -> None:
+    captured = {}
+
+    class Provider:
+        name = "sandbox"
+
+        def create_payment(self, **kwargs):
+            captured.update(kwargs)
+            return ProviderPayment("sandbox_payment", None)
+
+    checkout = {
+        "payment_id": PAYMENT_ID,
+        "provider": "sandbox",
+        "status": "pending",
+        "amount": Decimal("5.00"),
+        "wallet_amount": Decimal("2.00"),
+        "provider_amount": Decimal("3.00"),
+        "currency": "BRL",
+        "expires_at": START_AT,
+    }
+    repository_args = {}
+    monkeypatch.setattr(service, "_configured_provider", lambda: Provider())
+    monkeypatch.setattr(
+        service,
+        "create_checkout_record",
+        lambda **kwargs: (repository_args.update(kwargs) or checkout, True),
+    )
+    monkeypatch.setattr(
+        service,
+        "attach_provider_payment",
+        lambda *args: {**checkout, "provider_payment_id": args[1]},
+    )
+
+    payload = {
+        **checkout_payload(),
+        "use_wallet_balance": True,
+        "quoted_wallet_amount": Decimal("2.00"),
+        "quoted_provider_amount": Decimal("3.00"),
+    }
+    service.create_checkout(PLAYER.id, payload, payer_email=PLAYER.email)
+
+    assert captured["amount"] == Decimal("3.00")
+    assert repository_args["use_wallet_balance"] is True
+    assert repository_args["quoted_wallet_amount"] == Decimal("2.00")
+
+
+def test_mixed_sandbox_completion_signs_only_provider_amount(monkeypatch) -> None:
+    captured = {}
+
+    class Provider:
+        def signed_event(self, **kwargs):
+            captured.update(kwargs)
+            return b"payload", "signature"
+
+    monkeypatch.setattr(service, "_sandbox_provider", lambda: Provider())
+    monkeypatch.setattr(
+        service,
+        "get_player_payment",
+        lambda *_args: {
+            "provider": "sandbox",
+            "provider_payment_id": "sandbox_payment",
+            "amount": Decimal("5.00"),
+            "provider_amount": Decimal("3.00"),
+            "currency": "BRL",
+        },
+    )
+    monkeypatch.setattr(service, "process_webhook", lambda *_args: {"result": "processed"})
+
+    result = service.complete_sandbox_payment(PLAYER.id, PAYMENT_ID, "paid")
+
+    assert result == {"result": "processed"}
+    assert captured["amount"] == Decimal("3.00")
+
+
+def test_provider_configuration_failure_releases_wallet_and_hold(monkeypatch) -> None:
+    checkout = {
+        "payment_id": PAYMENT_ID,
+        "provider": "mercado_pago",
+        "status": "pending",
+        "wallet_amount": Decimal("2.00"),
+        "provider_amount": Decimal("3.00"),
+    }
+    failed = []
+    monkeypatch.setattr(service, "create_checkout_record", lambda **_kwargs: (checkout, True))
+    monkeypatch.setattr(
+        service,
+        "_configured_provider",
+        lambda: (_ for _ in ()).throw(service.PaymentConfigurationError("missing provider")),
+    )
+    monkeypatch.setattr(service, "fail_checkout_payment", lambda *args: failed.append(args))
+
+    with pytest.raises(service.PaymentConfigurationError):
+        service.create_checkout(PLAYER.id, checkout_payload())
+
+    assert failed == [(PAYMENT_ID, "provider_unavailable")]
 
 
 def test_pending_checkout_without_provider_reference_is_retried_idempotently(monkeypatch) -> None:
@@ -444,6 +646,7 @@ def test_pending_checkout_without_provider_reference_is_retried_idempotently(mon
         "provider_payment_id": None,
         "status": "pending",
         "amount": Decimal("5.00"),
+        "provider_amount": Decimal("5.00"),
         "currency": "BRL",
         "expires_at": START_AT,
     }
@@ -466,6 +669,7 @@ def test_provider_reference_failure_preserves_pending_payment_for_safe_retry(mon
         "provider": "sandbox",
         "status": "pending",
         "amount": Decimal("5.00"),
+        "provider_amount": Decimal("5.00"),
         "currency": "BRL",
         "expires_at": START_AT,
     }
@@ -619,6 +823,21 @@ def test_payment_migration_has_financial_invariants_rls_and_immutable_ledger() -
     )
     assert all(item in sql for item in required)
     assert "profiles.wallet_balance" not in sql
+
+
+def test_mixed_payment_migration_has_split_invariants() -> None:
+    migration = (
+        Path(__file__).parents[3]
+        / "supabase"
+        / "migrations"
+        / "202609250001_mixed_wallet_provider_payments.sql"
+    )
+    sql = migration.read_text(encoding="utf-8").lower()
+
+    assert "amount = wallet_amount + provider_amount" in sql
+    assert "payments_provider_consistent" in sql
+    assert "drop index if exists public.wallet_transactions_one_credit_per_payment" in sql
+    assert "use_wallet_balance" in sql
 
 
 def test_hold_expiration_and_availability_are_consistent() -> None:

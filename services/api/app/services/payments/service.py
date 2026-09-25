@@ -72,12 +72,7 @@ def _configured_provider() -> PaymentProvider:
 
 def create_checkout(user_id: str, data: dict, payer_email: str | None = None) -> dict:
     payment_method = data["payment_method"]
-    if payment_method == "provider":
-        provider = _configured_provider()
-        provider_name = provider.name
-    else:
-        provider = None
-        provider_name = "wallet"
+    provider_name = settings.payment_provider if settings.payment_provider_available else None
 
     checkout, created = create_checkout_record(
         user_id=user_id,
@@ -89,17 +84,30 @@ def create_checkout(user_id: str, data: dict, payer_email: str | None = None) ->
         advance_amount=settings.booking_advance_amount,
         hold_minutes=settings.payment_hold_minutes,
         provider_name=provider_name,
+        use_wallet_balance=bool(data.get("use_wallet_balance")),
+        quoted_wallet_amount=data.get("quoted_wallet_amount"),
+        quoted_provider_amount=data.get("quoted_provider_amount"),
     )
-    if payment_method == "wallet":
+    if checkout["provider"] == "wallet":
         return checkout
     if not created and (checkout["status"] != "pending" or checkout.get("provider_payment_id")):
         return checkout
 
-    assert provider is not None
+    try:
+        provider = _configured_provider()
+    except PaymentConfigurationError:
+        fail_checkout_payment(checkout["payment_id"], "provider_unavailable")
+        raise
+    if provider.name != checkout["provider"]:
+        fail_checkout_payment(checkout["payment_id"], "provider_changed")
+        raise PaymentConfigurationError(
+            "O provider desta tentativa nao esta mais disponivel.",
+            "provider_changed",
+        )
     try:
         provider_payment = provider.create_payment(
             payment_id=str(checkout["payment_id"]),
-            amount=Decimal(checkout["amount"]),
+            amount=Decimal(checkout["provider_amount"]),
             currency=str(checkout["currency"]),
             expires_at=checkout["expires_at"],
             idempotency_key=data["idempotency_key"],
@@ -229,7 +237,7 @@ def complete_sandbox_payment(user_id: str, payment_id: UUID, outcome: str) -> di
         event_id=f"sandbox:{payment_id}:{outcome}",
         provider_payment_id=payment["provider_payment_id"],
         status=outcome,  # type: ignore[arg-type]
-        amount=Decimal(payment["amount"]),
+        amount=Decimal(payment["provider_amount"]),
         currency=payment["currency"],
     )
     return process_webhook("sandbox", payload, signature)

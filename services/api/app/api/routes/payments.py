@@ -10,6 +10,7 @@ from app.repositories.payment_repository import (
     CheckoutConfigurationError,
     CheckoutIdempotencyConflictError,
     CheckoutNotFoundError,
+    CheckoutPaymentPlanChangedError,
     CheckoutSlotUnavailableError,
     PaymentOwnershipError,
     WalletInsufficientBalanceError,
@@ -62,6 +63,14 @@ def _checkout_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=409, detail={"code": "wallet_insufficient", "message": "Saldo PlayArena insuficiente."})
     if isinstance(exc, CheckoutIdempotencyConflictError):
         return HTTPException(status_code=409, detail={"code": "idempotency_conflict", "message": "Esta chave ja foi usada em outro checkout."})
+    if isinstance(exc, CheckoutPaymentPlanChangedError):
+        return HTTPException(
+            status_code=409,
+            detail={
+                "code": "payment_plan_changed",
+                "message": "Seu saldo mudou. Revise os valores antes de continuar.",
+            },
+        )
     if isinstance(exc, PaymentConfigurationError):
         return HTTPException(status_code=503, detail={"code": exc.code, "message": str(exc)})
     if isinstance(exc, CheckoutConfigurationError):
@@ -74,15 +83,25 @@ def checkout_quote(
     court_id: UUID,
     start_at: datetime,
     sport: str = Query(min_length=1, max_length=120),
+    use_wallet_balance: bool = Query(default=False),
     current_user: AuthenticatedUser = Depends(require_player),
 ) -> dict:
     try:
         validate_future_booking_start(start_at)
-        quote = get_checkout_quote(current_user.id, court_id, start_at, sport, settings.booking_advance_amount)
+        quote = get_checkout_quote(
+            current_user.id,
+            court_id,
+            start_at,
+            sport,
+            settings.booking_advance_amount,
+            use_wallet_balance=use_wallet_balance,
+        )
+        provider_available = settings.payment_provider_available
         return {
             **quote,
-            "provider_available": settings.payment_provider_available,
-            "payment_provider": settings.payment_provider if settings.payment_provider_available else None,
+            "provider_available": provider_available,
+            "checkout_available": not quote["requires_provider"] or provider_available,
+            "payment_provider": settings.payment_provider if provider_available else None,
             "hold_minutes": settings.payment_hold_minutes,
         }
     except (CheckoutNotFoundError, CheckoutSlotUnavailableError, CheckoutConfigurationError, ValueError) as exc:
@@ -103,6 +122,7 @@ def post_checkout(
         CheckoutSlotUnavailableError,
         CheckoutConfigurationError,
         CheckoutIdempotencyConflictError,
+        CheckoutPaymentPlanChangedError,
         WalletInsufficientBalanceError,
         PaymentConfigurationError,
     ) as exc:

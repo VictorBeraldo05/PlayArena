@@ -60,7 +60,13 @@ type CheckoutQuote = {
   currency: 'BRL';
   wallet_balance: string | number;
   wallet_available: boolean;
+  wallet_has_balance: boolean;
+  use_wallet_balance: boolean;
+  wallet_amount: string | number;
+  provider_amount: string | number;
+  requires_provider: boolean;
   provider_available: boolean;
+  checkout_available: boolean;
   payment_provider?: 'sandbox' | 'mercado_pago' | null;
   hold_minutes: number;
 };
@@ -74,6 +80,12 @@ type CheckoutPayment = CheckoutQuote & {
   expires_at: string;
 };
 type CheckoutStage = 'review' | 'processing' | 'failed' | 'success';
+type StoredCheckoutAttempt = {
+  key: string;
+  courtId: string;
+  startAt: string;
+  useWalletBalance: boolean;
+};
 
 function storedIntent(): ReservationIntent | null {
   if (typeof window === 'undefined') return null;
@@ -86,26 +98,32 @@ function storedIntent(): ReservationIntent | null {
   }
 }
 
-function storedCheckoutKey(intent: ReservationIntent): string {
-  if (typeof window === 'undefined') return '';
+function storedCheckoutAttempt(intent: ReservationIntent): StoredCheckoutAttempt | null {
+  if (typeof window === 'undefined') return null;
   try {
     const stored = JSON.parse(window.sessionStorage.getItem(PENDING_CHECKOUT_KEY) ?? 'null') as {
       key?: string;
       courtId?: string;
       startAt?: string;
+      useWalletBalance?: boolean;
     } | null;
-    return stored?.courtId === intent.courtId && stored?.startAt === intent.startAt
-      ? (stored.key ?? '')
-      : '';
+    if (!stored?.key || stored.courtId !== intent.courtId || stored.startAt !== intent.startAt)
+      return null;
+    return {
+      key: stored.key,
+      courtId: stored.courtId,
+      startAt: stored.startAt,
+      useWalletBalance: Boolean(stored.useWalletBalance),
+    };
   } catch {
-    return '';
+    return null;
   }
 }
 
-function persistCheckoutKey(intent: ReservationIntent, key: string) {
+function persistCheckoutKey(intent: ReservationIntent, key: string, useWalletBalance: boolean) {
   window.sessionStorage.setItem(
     PENDING_CHECKOUT_KEY,
-    JSON.stringify({ key, courtId: intent.courtId, startAt: intent.startAt }),
+    JSON.stringify({ key, courtId: intent.courtId, startAt: intent.startAt, useWalletBalance }),
   );
 }
 
@@ -140,12 +158,20 @@ function ReservationPage() {
     };
     return fromSearch.courtId ? fromSearch : (storedIntent() ?? fromSearch);
   });
+  const [storedAttempt] = useState<StoredCheckoutAttempt | null>(() =>
+    storedCheckoutAttempt(intent),
+  );
   const [quote, setQuote] = useState<CheckoutQuote | null>(null);
   const [payment, setPayment] = useState<CheckoutPayment | null>(null);
-  const [paymentMethod, setPaymentMethod] = useState<'wallet' | 'provider'>('provider');
+  const [useWalletBalance, setUseWalletBalance] = useState(
+    storedAttempt?.useWalletBalance ?? false,
+  );
+  const [quoteRefreshing, setQuoteRefreshing] = useState(false);
+  const [quoteReloadVersion, setQuoteReloadVersion] = useState(0);
+  const [checkoutAttemptLocked, setCheckoutAttemptLocked] = useState(Boolean(storedAttempt));
   const [stage, setStage] = useState<CheckoutStage>('review');
   const [error, setError] = useState('');
-  const idempotencyKey = useRef<string>(storedCheckoutKey(intent));
+  const idempotencyKey = useRef<string>(storedAttempt?.key ?? '');
   const submissionLock = useRef(false);
   const validIntent = Boolean(
     intent.arena &&
@@ -170,6 +196,7 @@ function ReservationPage() {
       court_id: intent.courtId,
       start_at: intent.startAt,
       sport: intent.sport,
+      use_wallet_balance: String(useWalletBalance),
     });
     void apiRequest<CheckoutQuote>(
       `/player/checkout/quote?${query.toString()}`,
@@ -179,10 +206,11 @@ function ReservationPage() {
       .then((data) => {
         if (!active) return;
         setQuote(data);
-        setPaymentMethod(data.wallet_available ? 'wallet' : 'provider');
+        setQuoteRefreshing(false);
       })
       .catch((requestError) => {
         if (!active) return;
+        setQuoteRefreshing(false);
         const unavailable = requestError instanceof ApiRequestError && requestError.status === 409;
         setError(
           unavailable
@@ -193,7 +221,16 @@ function ReservationPage() {
     return () => {
       active = false;
     };
-  }, [intent.courtId, intent.sport, intent.startAt, profileComplete, session, validIntent]);
+  }, [
+    intent.courtId,
+    intent.sport,
+    intent.startAt,
+    profileComplete,
+    quoteReloadVersion,
+    session,
+    useWalletBalance,
+    validIntent,
+  ]);
 
   function savePendingIntent() {
     window.sessionStorage.setItem(PENDING_RESERVATION_KEY, JSON.stringify(intent));
@@ -201,6 +238,13 @@ function ReservationPage() {
   function completeProfile() {
     savePendingIntent();
     router.push(`/player/perfil?returnTo=${encodeURIComponent('/reservar')}`);
+  }
+
+  function changeWalletUsage(checked: boolean) {
+    if (!quote || quoteRefreshing || idempotencyKey.current) return;
+    setError('');
+    setQuoteRefreshing(true);
+    setUseWalletBalance(checked);
   }
 
   async function waitForConfirmation(paymentId: string, accessToken: string) {
@@ -259,10 +303,8 @@ function ReservationPage() {
       return;
     }
     if (!quote) return;
-    if (paymentMethod === 'provider' && !quote.provider_available) {
-      setError(
-        'O pagamento online ainda não está disponível. Se você tiver saldo, use o Saldo PlayArena.',
-      );
+    if (!quote.checkout_available) {
+      setError('O pagamento via PIX ainda não está disponível.');
       return;
     }
 
@@ -271,12 +313,21 @@ function ReservationPage() {
     setError('');
     if (!idempotencyKey.current) {
       idempotencyKey.current = `checkout_${crypto.randomUUID()}`;
-      persistCheckoutKey(intent, idempotencyKey.current);
+      persistCheckoutKey(intent, idempotencyKey.current, quote.use_wallet_balance);
+      setCheckoutAttemptLocked(true);
     }
     trackEvent('checkout_started', {
       arenaId: quote.arena_id,
       courtId: quote.court_id,
-      properties: { source: paymentMethod, sport: intent.sport, start_at: quote.start_at },
+      properties: {
+        source: quote.requires_provider
+          ? quote.use_wallet_balance && quote.wallet_has_balance
+            ? 'wallet_pix'
+            : 'pix'
+          : 'wallet',
+        sport: intent.sport,
+        start_at: quote.start_at,
+      },
     });
     try {
       const created = await apiRequest<CheckoutPayment>('/player/checkout', session.access_token, {
@@ -285,7 +336,10 @@ function ReservationPage() {
           court_id: intent.courtId,
           start_at: intent.startAt,
           sport: intent.sport,
-          payment_method: paymentMethod,
+          payment_method: 'provider',
+          use_wallet_balance: quote.use_wallet_balance,
+          quoted_wallet_amount: quote.wallet_amount,
+          quoted_provider_amount: quote.provider_amount,
           idempotency_key: idempotencyKey.current,
         }),
       });
@@ -319,6 +373,11 @@ function ReservationPage() {
       ) {
         idempotencyKey.current = '';
         clearCheckoutKey();
+        setCheckoutAttemptLocked(false);
+      }
+      if (apiError?.code === 'payment_plan_changed') {
+        setQuote(null);
+        setQuoteReloadVersion((version) => version + 1);
       }
       setError(
         apiError?.code === 'slot_unavailable'
@@ -336,31 +395,33 @@ function ReservationPage() {
   if (stage === 'success' && payment) return <Success intent={intent} payment={payment} />;
 
   return (
-    <main className="min-h-[100dvh] bg-[#080D14] pb-44 text-white">
+    <main className="min-h-[100dvh] bg-[#080D14] pb-32 text-white">
       <div
         aria-hidden="true"
-        className="pointer-events-none fixed inset-x-0 top-0 h-72 bg-[radial-gradient(circle_at_50%_0%,rgba(143,255,60,.12),transparent_68%)]"
+        className="pointer-events-none fixed inset-x-0 top-0 h-80 bg-[radial-gradient(circle_at_50%_-12%,rgba(143,255,60,.14),transparent_64%)]"
       />
-      <div className="relative mx-auto max-w-[640px] px-4 pb-8 pt-[max(1rem,env(safe-area-inset-top))] sm:px-5">
-        <header className="grid grid-cols-[44px_1fr_44px] items-center">
+      <div className="relative mx-auto max-w-[540px] px-4 pb-6 pt-[max(.75rem,env(safe-area-inset-top))] sm:px-5">
+        <header className="grid min-h-12 grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-2">
           <button
             aria-label="Voltar"
-            className="grid min-h-11 place-items-center rounded-xl text-2xl text-[#C3CDD7]"
+            className="grid h-9 w-9 place-items-center rounded-xl text-2xl text-[#C3CDD7]"
             onClick={() => router.back()}
             type="button"
           >
             ‹
           </button>
-          <div className="text-center">
-            <p className="text-[10px] font-extrabold uppercase tracking-[.18em] text-[#8FFF3C]">
+          <div className="min-w-0 text-center">
+            <p className="text-[9px] font-extrabold uppercase tracking-[.17em] text-[#8FFF3C]">
               Checkout seguro
             </p>
-            <h1 className="mt-1 text-xl font-black tracking-[-.04em]">Finalizar reserva</h1>
+            <h1 className="mt-0.5 whitespace-nowrap text-[17px] font-black tracking-[-.04em]">
+              Finalizar reserva
+            </h1>
           </div>
-          <span />
+          <WalletBalance balance={quote?.wallet_balance} />
         </header>
         <ArenaSummary intent={intent} quote={quote} />
-        <form className="mt-5 space-y-4" onSubmit={(event) => void submit(event)}>
+        <form className="mt-3 space-y-3" onSubmit={(event) => void submit(event)}>
           {isLoading || quoteLoading ? (
             <CheckoutSkeleton />
           ) : !session ? (
@@ -371,9 +432,18 @@ function ReservationPage() {
             <ProfileNotice onComplete={completeProfile} />
           ) : quote ? (
             <>
+              <FeeExplanation amount={quote.booking_amount} />
               <Values quote={quote} />
-              <PaymentChoice method={paymentMethod} onChange={setPaymentMethod} quote={quote} />
-              <LegalNotices amount={quote.booking_amount} />
+              <PaymentChoice
+                disabled={quoteRefreshing || checkoutAttemptLocked}
+                onChange={changeWalletUsage}
+                quote={quote}
+              />
+              {quoteRefreshing ? (
+                <p aria-live="polite" className="text-center text-xs font-semibold text-[#9DA7B3]">
+                  Atualizando valores...
+                </p>
+              ) : null}
             </>
           ) : null}
           {error ? (
@@ -382,8 +452,8 @@ function ReservationPage() {
               onChooseAnother={() => router.push('/buscar/disponibilidade')}
             />
           ) : null}
-          <div className="fixed inset-x-0 bottom-0 z-20 border-t border-white/[.08] bg-[#0B1119]/95 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur-xl">
-            <div className="mx-auto max-w-[640px]">
+          <div className="fixed inset-x-0 bottom-0 z-20 border-t border-white/[.08] bg-[#0B1119]/95 px-4 pb-[max(.75rem,env(safe-area-inset-bottom))] pt-2.5 backdrop-blur-xl">
+            <div className="mx-auto max-w-[540px]">
               {stage === 'failed' ? (
                 <button
                   className="min-h-14 w-full rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14]"
@@ -413,15 +483,19 @@ function ReservationPage() {
               ) : (
                 <button
                   className="min-h-14 w-full rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14] disabled:cursor-not-allowed disabled:opacity-45"
-                  disabled={!quote || quoteLoading || Boolean(error)}
+                  disabled={
+                    !quote ||
+                    quoteLoading ||
+                    quoteRefreshing ||
+                    Boolean(error) ||
+                    !quote.checkout_available
+                  }
                   type="submit"
                 >
-                  {paymentMethod === 'wallet'
-                    ? 'Solicitar reserva usando saldo'
-                    : `Pagar ${quote ? formatCurrencyBRL(quote.booking_amount) : ''} e solicitar reserva`}
+                  {checkoutCtaLabel(quote, quoteRefreshing)}
                 </button>
               )}
-              <p className="mt-2 text-center text-[10px] font-semibold text-[#7F8A97]">
+              <p className="mt-1.5 text-center text-[10px] font-semibold text-[#7F8A97]">
                 Pagamento protegido pelo PlayArena
               </p>
             </div>
@@ -429,6 +503,30 @@ function ReservationPage() {
         </form>
       </div>
     </main>
+  );
+}
+
+function checkoutCtaLabel(quote: CheckoutQuote | null, refreshing: boolean) {
+  if (refreshing) return 'Atualizando valores...';
+  if (!quote) return 'Carregando valores...';
+  return quote.requires_provider
+    ? `Pagar ${formatCurrencyBRL(quote.provider_amount)} via PIX →`
+    : `Usar ${formatCurrencyBRL(quote.wallet_amount)} do saldo →`;
+}
+
+function WalletBalance({ balance }: { balance?: string | number }) {
+  return (
+    <div className="flex min-w-[86px] items-center justify-end gap-1.5 rounded-xl border border-white/[.08] bg-[#111923]/90 px-2.5 py-2">
+      <WalletIcon />
+      <div className="min-w-0 text-right leading-none">
+        <span className="block text-[8px] font-bold uppercase tracking-[.08em] text-[#7F8A97]">
+          Saldo PlayArena
+        </span>
+        <b className="mt-1 block whitespace-nowrap text-[11px]">
+          {balance === undefined ? '—' : formatCurrencyBRL(balance)}
+        </b>
+      </div>
+    </div>
   );
 }
 
@@ -445,27 +543,45 @@ function ArenaSummary({
   const start = quote?.start_at ?? intent.startAt;
   const end = quote?.end_at ?? intent.endAt;
   return (
-    <section className="mt-6 overflow-hidden rounded-[24px] border border-white/[.08] bg-[#111923]">
-      <div className="grid grid-cols-[98px_1fr]">
+    <section className="mt-3 overflow-hidden rounded-[20px] border border-white/[.08] bg-[#111923]">
+      <div className="grid grid-cols-[76px_1fr]">
         <ArenaMedia
           arena={{ name: arena, logo_path: quote?.logo_path ?? intent.logoPath }}
-          className="min-h-[146px]"
+          className="min-h-[112px]"
           critical
           prefer="logo"
           sport={sport}
           variant="ticket"
         />
-        <div className="flex min-w-0 flex-col justify-center p-4">
-          <p className="text-[10px] font-extrabold uppercase tracking-[.14em] text-[#8FFF3C]">
-            Sua partida
-          </p>
-          <h2 className="mt-2 truncate text-lg font-black">{arena}</h2>
-          <p className="mt-1 truncate text-sm text-[#9DA7B3]">
+        <div className="flex min-w-0 flex-col justify-center px-3.5 py-3">
+          <h2 className="truncate text-base font-black">{arena}</h2>
+          <p className="mt-0.5 truncate text-xs text-[#9DA7B3]">
             {court} · {sport}
           </p>
-          <p className="mt-4 text-sm font-bold">{friendlyDate(start)}</p>
-          <p className="mt-1 text-sm text-[#C3CDD7]">{formatReservationTimeRange(start, end)}</p>
+          <p className="mt-3 text-xs font-bold">{friendlyDate(start)}</p>
+          <p className="mt-0.5 text-xs text-[#C3CDD7]">
+            {formatReservationTimeRange(start, end)}
+          </p>
         </div>
+      </div>
+    </section>
+  );
+}
+
+function FeeExplanation({ amount }: { amount: string | number }) {
+  return (
+    <section className="flex items-start gap-3 rounded-[18px] border border-[#8FFF3C]/20 bg-[#8FFF3C]/[.055] p-3.5">
+      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-[#8FFF3C]/10 text-[#8FFF3C]">
+        <ShieldIcon />
+      </span>
+      <div className="min-w-0">
+        <h2 className="text-sm font-extrabold">
+          Você paga {formatCurrencyBRL(amount)} para solicitar a reserva
+        </h2>
+        <p className="mt-1 text-[11px] leading-[1.45] text-[#9DA7B3]">
+          Se confirmada, esse valor é descontado do pagamento na arena. Se a arena recusar, os{' '}
+          {formatCurrencyBRL(amount)} voltam para seu Saldo PlayArena.
+        </p>
       </div>
     </section>
   );
@@ -473,12 +589,12 @@ function ArenaSummary({
 
 function Values({ quote }: { quote: CheckoutQuote }) {
   return (
-    <section className="rounded-[22px] border border-white/[.08] bg-[#111923] p-5">
-      <p className="text-[11px] font-extrabold uppercase tracking-[.16em] text-[#9DA7B3]">
+    <section className="rounded-[18px] border border-white/[.08] bg-[#111923] px-4 py-3.5">
+      <p className="text-[10px] font-extrabold uppercase tracking-[.16em] text-[#9DA7B3]">
         Valores
       </p>
-      <div className="mt-4 space-y-3 text-sm">
-        <ValueRow label="Campo" value={formatCurrencyBRL(quote.court_price_total)} />
+      <div className="mt-2.5 space-y-2 text-xs">
+        <ValueRow label="Valor do campo" value={formatCurrencyBRL(quote.court_price_total)} />
         <ValueRow accent label="Pago agora" value={formatCurrencyBRL(quote.booking_amount)} />
         <div className="h-px bg-white/[.08]" />
         <ValueRow
@@ -504,7 +620,7 @@ function ValueRow({
   return (
     <p className="flex items-center justify-between gap-4">
       <span className={strong ? 'font-bold text-white' : 'text-[#9DA7B3]'}>{label}</span>
-      <b className={accent ? 'text-[#8FFF3C]' : strong ? 'text-base text-white' : 'text-white'}>
+      <b className={accent ? 'text-[#8FFF3C]' : strong ? 'text-sm text-white' : 'text-white'}>
         {value}
       </b>
     </p>
@@ -513,94 +629,65 @@ function ValueRow({
 
 function PaymentChoice({
   quote,
-  method,
   onChange,
+  disabled,
 }: {
   quote: CheckoutQuote;
-  method: 'wallet' | 'provider';
-  onChange: (method: 'wallet' | 'provider') => void;
+  onChange: (checked: boolean) => void;
+  disabled: boolean;
 }) {
+  const walletEnabled = quote.use_wallet_balance && quote.wallet_has_balance;
+  const plan = !walletEnabled
+    ? `${formatCurrencyBRL(quote.wallet_amount)} do saldo + ${formatCurrencyBRL(quote.provider_amount)} via PIX`
+    : quote.requires_provider
+      ? `${formatCurrencyBRL(quote.wallet_amount)} do saldo + ${formatCurrencyBRL(quote.provider_amount)} via PIX`
+      : `${formatCurrencyBRL(quote.wallet_amount)} do Saldo PlayArena`;
   return (
-    <section className="rounded-[22px] border border-white/[.08] bg-[#111923] p-5">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <p className="text-[11px] font-extrabold uppercase tracking-[.16em] text-[#9DA7B3]">
-            Saldo PlayArena
-          </p>
-          <strong className="mt-2 block text-2xl font-black tracking-[-.05em]">
-            {formatCurrencyBRL(quote.wallet_balance)}
-          </strong>
+    <section className="rounded-[18px] border border-white/[.08] bg-[#111923] p-4">
+      <p className="text-[10px] font-extrabold uppercase tracking-[.16em] text-[#9DA7B3]">
+        Forma de pagamento
+      </p>
+      <div className="mt-2.5 flex items-center gap-3 rounded-2xl bg-[#18212D] px-3.5 py-3">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#8FFF3C]/10 text-[#8FFF3C]">
+          <PixIcon />
+        </span>
+        <div className="min-w-0 flex-1">
+          <b className="block text-sm">PIX</b>
+          <span className="mt-0.5 block text-[11px] text-[#9DA7B3]">
+            Pagamento seguro via Mercado Pago
+          </span>
         </div>
-        <WalletIcon />
+        <b className="whitespace-nowrap text-sm">{formatCurrencyBRL(quote.provider_amount)}</b>
       </div>
-      {quote.wallet_available ? (
-        <label
-          className={`mt-5 flex cursor-pointer items-center gap-3 rounded-2xl border p-4 ${method === 'wallet' ? 'border-[#8FFF3C]/50 bg-[#8FFF3C]/[.07]' : 'border-white/[.08] bg-[#18212D]'}`}
-        >
-          <input
-            checked={method === 'wallet'}
-            className="h-4 w-4 accent-[#8FFF3C]"
-            name="payment"
-            onChange={() => onChange('wallet')}
-            type="radio"
-          />
-          <span className="min-w-0">
-            <b className="block text-sm">Usar {formatCurrencyBRL(quote.booking_amount)} do saldo</b>
-            <small className="mt-1 block text-xs text-[#9DA7B3]">
-              Confirmação imediata, sem gateway externo.
-            </small>
-          </span>
-        </label>
-      ) : (
-        <p className="mt-4 text-xs leading-5 text-[#9DA7B3]">
-          Seu saldo será preservado. Nesta versão não fazemos pagamento misto.
-        </p>
-      )}
-      {quote.provider_available ? (
-        <label
-          className={`mt-2 flex cursor-pointer items-center gap-3 rounded-2xl border p-4 ${method === 'provider' ? 'border-[#8FFF3C]/50 bg-[#8FFF3C]/[.07]' : 'border-white/[.08] bg-[#18212D]'}`}
-        >
-          <input
-            checked={method === 'provider'}
-            className="h-4 w-4 accent-[#8FFF3C]"
-            name="payment"
-            onChange={() => onChange('provider')}
-            type="radio"
-          />
-          <span>
-            <b className="block text-sm">Pagar online</b>
-            <small className="mt-1 block text-xs text-[#9DA7B3]">
-              {quote.payment_provider === 'mercado_pago'
-                ? 'Checkout hospedado pelo Mercado Pago em ambiente de teste.'
-                : 'Ambiente sandbox. Nenhum dado de cartão passa pelo PlayArena.'}
-            </small>
-          </span>
-        </label>
-      ) : null}
+      <label
+        className={`mt-2.5 flex items-center gap-3 rounded-2xl border px-3.5 py-3 ${
+          quote.wallet_has_balance
+            ? 'cursor-pointer border-white/[.08] bg-[#0D151F]'
+            : 'cursor-not-allowed border-white/[.05] bg-[#0D151F]/60'
+        }`}
+      >
+        <span className="min-w-0 flex-1">
+          <b className="block text-sm">Usar meu Saldo PlayArena</b>
+          <small className="mt-0.5 block text-[11px] text-[#9DA7B3]">
+            {quote.wallet_has_balance
+              ? `Saldo disponível: ${formatCurrencyBRL(quote.wallet_balance)}`
+              : 'Você ainda não possui saldo.'}
+          </small>
+        </span>
+        <input
+          aria-label="Usar Saldo PlayArena"
+          checked={walletEnabled}
+          className="peer sr-only"
+          disabled={disabled || !quote.wallet_has_balance}
+          onChange={(event) => onChange(event.target.checked)}
+          type="checkbox"
+        />
+        <span className="relative h-6 w-11 shrink-0 rounded-full bg-[#27313D] transition-colors after:absolute after:left-1 after:top-1 after:h-4 after:w-4 after:rounded-full after:bg-[#9DA7B3] after:transition-transform peer-checked:bg-[#8FFF3C] peer-checked:after:translate-x-5 peer-checked:after:bg-[#080D14] peer-disabled:opacity-45" />
+      </label>
+      <p className="mt-2.5 rounded-xl border border-white/[.06] bg-white/[.025] px-3 py-2 text-center text-[11px] font-bold text-[#C3CDD7]">
+        {plan}
+      </p>
     </section>
-  );
-}
-
-function LegalNotices({ amount }: { amount: string | number }) {
-  return (
-    <section className="space-y-2">
-      <InfoNotice icon="$" text={`Você paga ${formatCurrencyBRL(amount)} agora.`} />
-      <InfoNotice icon="↓" text="O valor pago agora será abatido do valor do campo na arena." />
-      <InfoNotice
-        icon="↺"
-        text={`Se a arena não confirmar sua reserva, os ${formatCurrencyBRL(amount)} voltarão para o seu Saldo PlayArena.`}
-      />
-    </section>
-  );
-}
-function InfoNotice({ icon, text }: { icon: string; text: string }) {
-  return (
-    <div className="flex items-start gap-3 rounded-[18px] border border-white/[.07] bg-[#111923]/70 p-4">
-      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-[#8FFF3C]/10 font-black text-[#8FFF3C]">
-        {icon}
-      </span>
-      <p className="pt-1 text-xs font-semibold leading-5 text-[#C3CDD7]">{text}</p>
-    </div>
   );
 }
 
@@ -887,19 +974,50 @@ function MailIcon() {
     </svg>
   );
 }
+function PixIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 24 24" width="20">
+      <path
+        d="m8.6 4.9 2.2-2.2a1.7 1.7 0 0 1 2.4 0l2.2 2.2a3.4 3.4 0 0 0 2.4 1h.5l3 3a1.7 1.7 0 0 1 0 2.4L18.6 14h-.8a3.4 3.4 0 0 0-2.4 1l-2.2 2.2a1.7 1.7 0 0 1-2.4 0L8.6 15a3.4 3.4 0 0 0-2.4-1h-.8l-2.7-2.7a1.7 1.7 0 0 1 0-2.4l3-3h.5a3.4 3.4 0 0 0 2.4-1Z"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth="1.7"
+      />
+      <path d="m7.2 12 3.2-3.2a2.3 2.3 0 0 1 3.2 0l3.2 3.2" stroke="currentColor" strokeLinecap="round" strokeWidth="1.7" />
+    </svg>
+  );
+}
+function ShieldIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      fill="none"
+      height="18"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.8"
+      viewBox="0 0 24 24"
+      width="18"
+    >
+      <path d="M12 3 5 6v5c0 4.6 2.8 8.1 7 10 4.2-1.9 7-5.4 7-10V6z" />
+      <path d="m9 12 2 2 4-4" />
+    </svg>
+  );
+}
 function WalletIcon() {
   return (
     <svg
       aria-hidden="true"
       className="text-[#8FFF3C]"
       fill="none"
-      height="30"
+      height="18"
       stroke="currentColor"
       strokeLinecap="round"
       strokeLinejoin="round"
       strokeWidth="1.7"
       viewBox="0 0 24 24"
-      width="30"
+      width="18"
     >
       <path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H19a1 1 0 0 1 1 1v13H6.5A2.5 2.5 0 0 1 4 16.5z" />
       <path d="M4 8h15M16 12h4v4h-4a2 2 0 0 1 0-4Z" />

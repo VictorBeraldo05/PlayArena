@@ -37,12 +37,28 @@ class CheckoutIdempotencyConflictError(Exception):
     pass
 
 
+class CheckoutPaymentPlanChangedError(Exception):
+    pass
+
+
 class PaymentOwnershipError(Exception):
     pass
 
 
 def _decimal(value: Any) -> Decimal:
     return Decimal(str(value)).quantize(MONEY)
+
+
+def split_checkout_amounts(
+    wallet_balance: Decimal,
+    advance_amount: Decimal,
+    *,
+    use_wallet_balance: bool,
+) -> tuple[Decimal, Decimal]:
+    advance = _decimal(advance_amount)
+    available = max(_decimal(wallet_balance), Decimal("0.00"))
+    wallet_amount = min(available, advance) if use_wallet_balance else Decimal("0.00")
+    return wallet_amount, advance - wallet_amount
 
 
 def _lock_slot(session: Any, court_id: UUID | str, start_at: datetime, end_at: datetime) -> None:
@@ -61,10 +77,21 @@ def expire_stale_holds(session: Any) -> None:
         where status = 'active' and expires_at <= timezone('utc', now())
     """))
     session.execute(text("""
-        update public.payments p
-        set status = 'expired'
-        from public.booking_holds h
-        where p.hold_id = h.id and p.status = 'pending' and h.status = 'expired'
+        with expired_payments as (
+          update public.payments p
+          set status = 'expired'
+          from public.booking_holds h
+          where p.hold_id = h.id and p.status = 'pending' and h.status = 'expired'
+          returning p.id, p.user_id, p.wallet_amount
+        )
+        insert into public.wallet_transactions
+          (user_id, type, amount, payment_id, reason, idempotency_key)
+        select user_id, 'refund_credit', wallet_amount, id,
+               'Saldo reservado devolvido apos expiracao',
+               'checkout-wallet-release:' || id::text
+        from expired_payments
+        where wallet_amount > 0
+        on conflict do nothing
     """))
 
 
@@ -145,7 +172,15 @@ def _resolve_booking(
     return result
 
 
-def get_checkout_quote(user_id: str, court_id: UUID, start_at: datetime, sport: str, advance_amount: Decimal) -> dict[str, Any]:
+def get_checkout_quote(
+    user_id: str,
+    court_id: UUID,
+    start_at: datetime,
+    sport: str,
+    advance_amount: Decimal,
+    *,
+    use_wallet_balance: bool = False,
+) -> dict[str, Any]:
     factory = get_session_factory()
     with factory() as session:
         booking = _resolve_booking(session, user_id=user_id, court_id=court_id, start_at=start_at, sport=sport)
@@ -153,6 +188,11 @@ def get_checkout_quote(user_id: str, court_id: UUID, start_at: datetime, sport: 
         if booking["court_price_total"] < advance:
             raise CheckoutConfigurationError("O valor do campo e menor que a antecipacao configurada.")
         balance = _wallet_balance(session, user_id)
+        wallet_amount, provider_amount = split_checkout_amounts(
+            balance,
+            advance,
+            use_wallet_balance=use_wallet_balance,
+        )
         return {
             **booking,
             "start_at": start_at,
@@ -161,6 +201,11 @@ def get_checkout_quote(user_id: str, court_id: UUID, start_at: datetime, sport: 
             "currency": "BRL",
             "wallet_balance": balance,
             "wallet_available": balance >= advance,
+            "wallet_has_balance": balance > 0,
+            "use_wallet_balance": use_wallet_balance,
+            "wallet_amount": wallet_amount,
+            "provider_amount": provider_amount,
+            "requires_provider": provider_amount > 0,
         }
 
 
@@ -181,7 +226,8 @@ def _payment_response(payment: dict[str, Any], booking: dict[str, Any] | None = 
 def _existing_checkout(session: Any, user_id: str, idempotency_key: str) -> dict[str, Any] | None:
     row = session.execute(text("""
         select p.id as payment_id, p.hold_id, p.reservation_id, p.provider, p.provider_payment_id,
-               p.amount, p.currency, p.status, p.checkout_url, p.expires_at,
+               p.amount, p.wallet_amount, p.provider_amount, p.use_wallet_balance,
+               p.currency, p.status, p.checkout_url, p.expires_at,
                h.arena_id, a.name as arena_name, a.logo_path, h.court_id, c.name as court_name,
                h.sport_id, s.name as sport_name, h.start_at, h.end_at,
                h.court_price_total, h.booking_amount, h.amount_due_at_venue
@@ -221,16 +267,24 @@ def create_checkout_record(
     idempotency_key: str,
     advance_amount: Decimal,
     hold_minutes: int,
-    provider_name: str,
+    provider_name: str | None,
+    use_wallet_balance: bool = False,
+    quoted_wallet_amount: Decimal | None = None,
+    quoted_provider_amount: Decimal | None = None,
 ) -> tuple[dict[str, Any], bool]:
     factory = get_session_factory()
     try:
         with factory.begin() as session:
             expire_stale_holds(session)
             existing = _existing_checkout(session, user_id, idempotency_key)
-            expected_provider = "wallet" if payment_method == "wallet" else provider_name
+            wallet_requested = payment_method == "wallet" or use_wallet_balance
             if existing:
-                if existing["court_id"] != court_id or existing["start_at"] != start_at or existing["provider"] != expected_provider:
+                if (
+                    existing["court_id"] != court_id
+                    or existing["start_at"] != start_at
+                    or bool(existing["use_wallet_balance"]) != wallet_requested
+                    or (payment_method == "wallet" and existing["provider"] != "wallet")
+                ):
                     raise CheckoutIdempotencyConflictError
                 return existing, False
 
@@ -242,6 +296,30 @@ def create_checkout_record(
             total = base["court_price_total"]
             if total < advance:
                 raise CheckoutConfigurationError("O valor do campo e menor que a antecipacao configurada.")
+            if wallet_requested:
+                session.execute(
+                    text("select id from public.profiles where id = :user_id for update"),
+                    {"user_id": user_id},
+                )
+            balance = _wallet_balance(session, user_id) if wallet_requested else Decimal("0.00")
+            wallet_amount, provider_amount = split_checkout_amounts(
+                balance,
+                advance,
+                use_wallet_balance=wallet_requested,
+            )
+            if (
+                quoted_wallet_amount is not None
+                and _decimal(quoted_wallet_amount) != wallet_amount
+            ) or (
+                quoted_provider_amount is not None
+                and _decimal(quoted_provider_amount) != provider_amount
+            ):
+                raise CheckoutPaymentPlanChangedError
+            if payment_method == "wallet" and wallet_amount < advance:
+                raise WalletInsufficientBalanceError
+            if provider_amount > 0 and provider_name not in {"sandbox", "mercado_pago"}:
+                raise CheckoutConfigurationError("O pagamento via PIX ainda nao esta disponivel.")
+
             expires_at = datetime.now(timezone.utc) + timedelta(minutes=hold_minutes)
             hold_values = {
                 **base,
@@ -264,39 +342,42 @@ def create_checkout_record(
                   :currency, :idempotency_key, :expires_at
                 ) returning id
             """), hold_values).mappings().one())
-            provider = "wallet" if payment_method == "wallet" else provider_name
-            payment_status = "paid" if payment_method == "wallet" else "pending"
-
-            if payment_method == "wallet":
-                session.execute(text("select id from public.profiles where id = :user_id for update"), {"user_id": user_id})
-                if _wallet_balance(session, user_id) < advance:
-                    raise WalletInsufficientBalanceError
+            provider = "wallet" if provider_amount == 0 else provider_name
+            payment_status = "paid" if provider_amount == 0 else "pending"
 
             payment = dict(session.execute(text("""
                 insert into public.payments (
-                  hold_id, user_id, provider, amount, currency, status, idempotency_key,
-                  paid_at, expires_at
+                  hold_id, user_id, provider, amount, wallet_amount, provider_amount,
+                  use_wallet_balance, currency, status, idempotency_key, paid_at, expires_at
                 ) values (
-                  :hold_id, :user_id, :provider, :amount, 'BRL', :status, :idempotency_key,
-                  case when :status = 'paid' then timezone('utc', now()) else null end, :expires_at
+                  :hold_id, :user_id, :provider, :amount, :wallet_amount, :provider_amount,
+                  :use_wallet_balance, 'BRL', :status, :idempotency_key,
+                  case when :status = 'paid' then timezone('utc', now()) else null end,
+                  :expires_at
                 ) returning id as payment_id, hold_id, reservation_id, provider,
-                            provider_payment_id, amount, currency, status, checkout_url, expires_at
+                            provider_payment_id, amount, wallet_amount, provider_amount,
+                            use_wallet_balance, currency, status, checkout_url, expires_at
             """), {
                 "hold_id": hold["id"], "user_id": user_id, "provider": provider,
-                "amount": advance, "status": payment_status, "idempotency_key": idempotency_key,
+                "amount": advance, "wallet_amount": wallet_amount,
+                "provider_amount": provider_amount, "use_wallet_balance": wallet_requested,
+                "status": payment_status, "idempotency_key": idempotency_key,
                 "expires_at": expires_at,
             }).mappings().one())
 
-            if payment_method == "wallet":
+            if wallet_amount > 0:
                 session.execute(text("""
                     insert into public.wallet_transactions
                       (user_id, type, amount, payment_id, reason, idempotency_key)
                     values (:user_id, 'booking_debit', :amount, :payment_id,
                             'Utilizado em reserva', :ledger_key)
                 """), {
-                    "user_id": user_id, "amount": -advance, "payment_id": payment["payment_id"],
+                    "user_id": user_id, "amount": -wallet_amount,
+                    "payment_id": payment["payment_id"],
                     "ledger_key": f"booking-debit:{payment['payment_id']}",
                 })
+
+            if provider_amount == 0:
                 reservation = _insert_reservation(session, hold=hold_values, payment_id=payment["payment_id"])
                 session.execute(text("""
                     update public.payments set reservation_id = :reservation_id where id = :payment_id
@@ -305,6 +386,7 @@ def create_checkout_record(
                     update public.booking_holds set status = 'converted', reservation_id = :reservation_id where id = :hold_id
                 """), {"reservation_id": reservation["id"], "hold_id": hold["id"]})
                 payment["reservation_id"] = reservation["id"]
+            if wallet_amount > 0:
                 logger.info("wallet.debit payment_id=%s", payment["payment_id"])
             logger.info("payment.created payment_id=%s provider=%s", payment["payment_id"], provider)
             return _payment_response(payment, hold_values), True
@@ -322,11 +404,48 @@ def attach_provider_payment(payment_id: UUID | str, provider_payment_id: str, ch
             where id = :payment_id and status = 'pending'
               and (provider_payment_id is null or provider_payment_id = :provider_payment_id)
             returning id as payment_id, hold_id, reservation_id, provider, provider_payment_id,
-                      amount, currency, status, checkout_url, expires_at
+                      amount, wallet_amount, provider_amount, use_wallet_balance,
+                      currency, status, checkout_url, expires_at
         """), {"payment_id": payment_id, "provider_payment_id": provider_payment_id, "checkout_url": checkout_url}).mappings().one_or_none()
         if row is None:
             raise CheckoutNotFoundError
         return dict(row)
+
+
+def _credit_payment_amount(
+    session: Any,
+    payment: dict[str, Any],
+    *,
+    amount: Decimal,
+    reason: str,
+    ledger_key: str,
+) -> bool:
+    if amount <= 0:
+        return False
+    row = session.execute(text("""
+        insert into public.wallet_transactions
+          (user_id, type, amount, payment_id, reason, idempotency_key)
+        values (:user_id, 'refund_credit', :amount, :payment_id, :reason, :idempotency_key)
+        on conflict do nothing
+        returning id
+    """), {
+        "user_id": payment["user_id"],
+        "amount": amount,
+        "payment_id": payment["payment_id"],
+        "reason": reason,
+        "idempotency_key": ledger_key,
+    }).mappings().one_or_none()
+    return row is not None
+
+
+def _release_wallet_contribution(session: Any, payment: dict[str, Any], reason: str) -> bool:
+    return _credit_payment_amount(
+        session,
+        payment,
+        amount=_decimal(payment.get("wallet_amount", 0)),
+        reason=reason,
+        ledger_key=f"checkout-wallet-release:{payment['payment_id']}",
+    )
 
 
 def fail_checkout_payment(payment_id: UUID | str, failure_code: str) -> None:
@@ -334,10 +453,16 @@ def fail_checkout_payment(payment_id: UUID | str, failure_code: str) -> None:
     with factory.begin() as session:
         row = session.execute(text("""
             update public.payments set status = 'failed', failed_at = timezone('utc', now()), failure_code = :failure_code
-            where id = :payment_id and status = 'pending' returning hold_id
+            where id = :payment_id and status = 'pending'
+            returning id as payment_id, hold_id, user_id, wallet_amount
         """), {"payment_id": payment_id, "failure_code": failure_code}).mappings().one_or_none()
         if row:
             session.execute(text("update public.booking_holds set status = 'cancelled' where id = :hold_id and status = 'active'"), {"hold_id": row["hold_id"]})
+            _release_wallet_contribution(
+                session,
+                dict(row),
+                "Saldo reservado devolvido por falha no pagamento",
+            )
             logger.info("payment.failed payment_id=%s", payment_id)
 
 
@@ -347,7 +472,7 @@ def get_player_payment(user_id: str, payment_id: UUID) -> dict[str, Any]:
         expire_stale_holds(session)
         row = session.execute(text("""
             select p.id as payment_id, p.hold_id, p.reservation_id, p.provider, p.provider_payment_id,
-                   p.amount, p.currency,
+                   p.amount, p.wallet_amount, p.provider_amount, p.use_wallet_balance, p.currency,
                    case when p.status = 'pending' and h.status = 'expired' then 'expired' else p.status end as status,
                    p.checkout_url, p.expires_at, h.arena_id, a.name as arena_name, a.logo_path,
                    h.court_id, c.name as court_name, h.sport_id, s.name as sport_name,
@@ -368,15 +493,14 @@ def get_player_payment(user_id: str, payment_id: UUID) -> dict[str, Any]:
 
 
 def _credit_unfulfilled_payment(session: Any, payment: dict[str, Any], reason: str) -> None:
-    session.execute(text("""
-        insert into public.wallet_transactions
-          (user_id, type, amount, payment_id, reason, idempotency_key)
-        values (:user_id, 'refund_credit', :amount, :payment_id, :reason, :idempotency_key)
-        on conflict do nothing
-    """), {
-        "user_id": payment["user_id"], "amount": payment["amount"], "payment_id": payment["payment_id"],
-        "reason": reason, "idempotency_key": f"unfulfilled-payment-credit:{payment['payment_id']}",
-    })
+    _release_wallet_contribution(session, payment, reason)
+    _credit_payment_amount(
+        session,
+        payment,
+        amount=_decimal(payment.get("provider_amount", payment["amount"])),
+        reason=reason,
+        ledger_key=f"unfulfilled-provider-credit:{payment['payment_id']}",
+    )
 
 
 def process_provider_event(provider: str, event: ProviderWebhookEvent, raw_payload: bytes) -> dict[str, Any]:
@@ -395,7 +519,8 @@ def process_provider_event(provider: str, event: ProviderWebhookEvent, raw_paylo
 
         payment_row = session.execute(text("""
             select p.id as payment_id, p.user_id, p.hold_id, p.reservation_id,
-                   p.provider_payment_id, p.status, p.amount, p.currency,
+                   p.provider_payment_id, p.status, p.amount, p.wallet_amount,
+                   p.provider_amount, p.use_wallet_balance, p.currency,
                    h.arena_id, h.court_id, h.sport_id, h.customer_name, h.customer_phone,
                    h.start_at, h.end_at, h.court_price_total, h.booking_amount,
                    h.amount_due_at_venue, h.status as hold_status,
@@ -419,7 +544,10 @@ def process_provider_event(provider: str, event: ProviderWebhookEvent, raw_paylo
             session.execute(text("update public.payment_webhook_events set result='rejected', processed_at=timezone('utc', now()) where id=:id"), {"id": event_row["id"]})
             return {"result": "unknown_payment"}
         payment = dict(payment_row)
-        if _decimal(event.amount) != _decimal(payment["amount"]) or event.currency != payment["currency"]:
+        if (
+            _decimal(event.amount) != _decimal(payment["provider_amount"])
+            or event.currency != payment["currency"]
+        ):
             session.execute(text("update public.payment_webhook_events set payment_id=:payment_id, result='rejected', processed_at=timezone('utc', now()) where id=:id"), {"payment_id": payment["payment_id"], "id": event_row["id"]})
             return {"result": "amount_mismatch"}
         if event.external_reference is not None and event.external_reference != str(payment["payment_id"]):
@@ -451,6 +579,11 @@ def process_provider_event(provider: str, event: ProviderWebhookEvent, raw_paylo
                 where id=:payment_id
             """), {"status": event.status, "payment_id": payment["payment_id"]})
             session.execute(text("update public.booking_holds set status='cancelled' where id=:hold_id and status='active'"), {"hold_id": payment["hold_id"]})
+            _release_wallet_contribution(
+                session,
+                payment,
+                "Saldo reservado devolvido por pagamento nao concluido",
+            )
             session.execute(text("update public.payment_webhook_events set payment_id=:payment_id, result='processed', processed_at=timezone('utc', now()) where id=:id"), {"payment_id": payment["payment_id"], "id": event_row["id"]})
             logger.info("payment.%s payment_id=%s", event.status, payment["payment_id"])
             return {"result": "processed", "status": event.status, "reservation_id": None}
@@ -540,7 +673,8 @@ def get_admin_payments(days: int, limit: int = 100) -> dict[str, Any]:
               from filtered
         """), {"days": days}).mappings().one())
         rows = session.execute(text("""
-            select p.id, p.provider, p.provider_payment_id, p.amount, p.currency, p.status,
+            select p.id, p.provider, p.provider_payment_id, p.amount,
+                   p.wallet_amount, p.provider_amount, p.currency, p.status,
                    p.reservation_id, p.failure_code, p.expires_at, p.created_at, p.paid_at,
                    a.id as arena_id, a.name as arena_name
             from public.payments p join public.booking_holds h on h.id=p.hold_id
@@ -549,13 +683,22 @@ def get_admin_payments(days: int, limit: int = 100) -> dict[str, Any]:
             order by p.created_at desc limit :limit
         """), {"days": days, "limit": limit}).mappings()
         reconciliation = dict(session.execute(text("""
+            with credits as (
+              select payment_id, sum(amount) as amount
+              from public.wallet_transactions
+              where type='refund_credit' and payment_id is not null
+              group by payment_id
+            )
             select
-              count(*) filter (where p.status='paid' and p.reservation_id is null and wt.id is null) as paid_without_reservation_or_credit,
+              count(*) filter (
+                where p.status='paid' and p.reservation_id is null
+                  and coalesce(cr.amount, 0) < p.amount
+              ) as paid_without_reservation_or_credit,
               count(*) filter (where p.status='paid' and p.reservation_id is not null and r.id is null) as missing_reservation,
               count(*) filter (where r.id is not null and r.payment_id <> p.id) as mismatched_reservation_payment
             from public.payments p
             left join public.reservations r on r.id=p.reservation_id
-            left join public.wallet_transactions wt on wt.payment_id=p.id and wt.type='refund_credit'
+            left join credits cr on cr.payment_id=p.id
         """)).mappings().one())
         return {"overview": overview, "payments": [dict(row) for row in rows], "reconciliation": reconciliation}
 
@@ -564,7 +707,8 @@ def get_admin_payment_for_reconciliation(payment_id: UUID) -> dict[str, Any]:
     factory = get_session_factory()
     with factory() as session:
         row = session.execute(text("""
-            select id as payment_id, provider, provider_payment_id, amount, currency,
+            select id as payment_id, provider, provider_payment_id, amount,
+                   wallet_amount, provider_amount, currency,
                    status, reservation_id, expires_at
             from public.payments
             where id = :payment_id

@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
@@ -14,6 +15,9 @@ class CheckoutCreate(BaseModel):
     start_at: datetime
     sport: str = Field(min_length=1, max_length=120)
     payment_method: Literal["wallet", "provider"]
+    use_wallet_balance: bool = False
+    quoted_wallet_amount: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=2)
+    quoted_provider_amount: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=2)
     idempotency_key: str = Field(min_length=16, max_length=120, pattern=r"^[A-Za-z0-9:_-]+$")
 
     @field_validator("start_at")

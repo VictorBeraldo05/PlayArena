@@ -103,6 +103,14 @@ def test_create_order_uses_backend_values_idempotency_and_hosted_checkout() -> N
     ]
     assert body["external_reference"] == PAYMENT_ID
     assert body["payer"] == {"email": "buyer@testuser.com"}
+    assert body["config"]["payment_method"]["not_allowed_types"] == [
+        "account_money",
+        "credit_card",
+        "debit_card",
+        "prepaid_card",
+        "ticket",
+        "digital_currency",
+    ]
     assert body["config"]["online"]["success_url"].startswith(
         f"{RETURN_URL}?payment_id={PAYMENT_ID}"
     )

@@ -91,7 +91,17 @@ class MercadoPagoProvider:
                     "failure_url": self._build_return_url(payment_id, "failure"),
                     "pending_url": self._build_return_url(payment_id, "pending"),
                     "auto_return": "all",
-                }
+                },
+                "payment_method": {
+                    "not_allowed_types": [
+                        "account_money",
+                        "credit_card",
+                        "debit_card",
+                        "prepaid_card",
+                        "ticket",
+                        "digital_currency",
+                    ]
+                },
             },
         }
         if payer_email:
