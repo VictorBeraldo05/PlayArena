@@ -111,12 +111,11 @@ def post_player_reservation(
         principal=f"user:{current_user.id}",
         limit=settings.reservation_rate_limit_per_minute,
     )
-    try:
-        return create_player_reservation(current_user.id, input_data.model_dump())
-    except BookingConflictError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Esse horario acabou de ser reservado.") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    del input_data
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={"code": "payment_required", "message": "Use o checkout para solicitar esta reserva."},
+    )
 
 
 @router.get("/player/reservations")

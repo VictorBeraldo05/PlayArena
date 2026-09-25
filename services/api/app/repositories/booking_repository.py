@@ -6,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from app.db.session import get_session_factory
+from app.repositories.payment_repository import credit_reservation_payment
 from app.schemas.booking import SAO_PAULO_TIME_ZONE
 
 
@@ -74,6 +75,10 @@ def available(city: str | None, sport: str, start_at: datetime, arena_id: UUID |
               select 1 from public.reservations r where r.court_id = ca.court_id
                 and r.status in ('pending', 'confirmed')
                 and r.reservation_window && tstzrange(ca.start_at, ca.end_at, '[)')
+            ) and not exists (
+              select 1 from public.booking_holds h where h.court_id = ca.court_id
+                and h.status = 'active' and h.expires_at > timezone('utc', now())
+                and h.hold_window && tstzrange(ca.start_at, ca.end_at, '[)')
             )
         """), {"city": city, "sport": sport, "start_at": start_at, "arena_id": arena_id, "court_id": court_id}).mappings()
         return [dict(row) for row in rows if row["price"] is not None]
@@ -191,6 +196,12 @@ def public_arena_schedule(arena_id: UUID, day: date, court_id: UUID | None = Non
                   where r.court_id = slot.court_id and r.status in ('pending', 'confirmed')
                     and r.reservation_window && tstzrange(slot.start_at, slot.end_at, '[)')
                 ) as is_reserved,
+                exists(
+                  select 1 from public.booking_holds h
+                  where h.court_id = slot.court_id and h.status = 'active'
+                    and h.expires_at > timezone('utc', now())
+                    and h.hold_window && tstzrange(slot.start_at, slot.end_at, '[)')
+                ) as is_held,
                 (
                   select pr.price from public.pricing_rules pr
                   where pr.court_id = slot.court_id and pr.active
@@ -205,11 +216,11 @@ def public_arena_schedule(arena_id: UUID, day: date, court_id: UUID | None = Non
               case
                 when start_at <= now() then 'past'
                 when is_blocked then 'blocked'
-                when is_reserved then 'reserved'
+                when is_reserved or is_held then 'reserved'
                 when price is null then 'unavailable'
                 else 'available'
               end as status,
-              case when start_at > now() and not is_blocked and not is_reserved then price else null end as price
+              case when start_at > now() and not is_blocked and not is_reserved and not is_held then price else null end as price
             from resolved_slots
             order by start_at, court_id
         """), {"arena_id": arena_id, "court_id": court_id, "day": day}).mappings()
@@ -217,58 +228,9 @@ def public_arena_schedule(arena_id: UUID, day: date, court_id: UUID | None = Non
 
 
 def create_player_reservation(user_id: str, data: dict[str, Any]) -> dict[str, Any]:
-    """Create an app pending reservation with every sensitive field server-derived."""
-    factory = get_session_factory()
-    try:
-        with factory.begin() as session:
-            court = session.execute(text("""
-                select c.arena_id, c.default_duration_minutes from public.courts c
-                join public.arenas a on a.id = c.arena_id
-                where c.id = :court_id and c.active and a.active
-            """), data).mappings().one_or_none()
-            if court is None:
-                raise ValueError("Court is not available.")
-            payload = {**data, "arena_id": court["arena_id"], "end_at": data["start_at"] + timedelta(minutes=court["default_duration_minutes"])}
-            opening = session.execute(text("""
-                select 1 from public.opening_hours where arena_id = :arena_id and active
-                  and weekday = CAST(EXTRACT(DOW FROM :start_at) AS smallint)
-                  and open_time <= CAST(:start_at AS time) and close_time >= CAST(:end_at AS time)
-            """), payload).scalar_one_or_none()
-            if opening is None:
-                raise ValueError("Court is closed for the full requested period.")
-            blocked = session.execute(text("""
-                select 1 from public.blocked_slots where court_id = :court_id
-                  and tstzrange(start_at, end_at, '[)') && tstzrange(:start_at, :end_at, '[)')
-            """), payload).scalar_one_or_none()
-            if blocked is not None:
-                raise BookingConflictError
-            existing_reservation = session.execute(text("""
-                select 1 from public.reservations where court_id = :court_id
-                  and status in ('pending', 'confirmed')
-                  and reservation_window && tstzrange(:start_at, :end_at, '[)')
-            """), payload).scalar_one_or_none()
-            if existing_reservation is not None:
-                raise BookingConflictError
-            price = session.execute(text("""
-                select pr.price from public.pricing_rules pr where pr.court_id = :court_id and pr.active
-                  and pr.weekday = CAST(EXTRACT(DOW FROM :start_at) AS smallint)
-                  and pr.start_time <= CAST(:start_at AS time) and pr.end_time >= CAST(:end_at AS time)
-                order by (pr.end_time - pr.start_time) asc, pr.created_at desc, pr.id desc limit 1
-            """), payload).scalar_one_or_none()
-            if price is None:
-                raise ValueError("No price rule applies to this time.")
-            row = session.execute(text("""
-                insert into public.reservations
-                  (arena_id, court_id, user_id, customer_name, customer_phone, start_at, end_at, price, status, source)
-                values
-                  (:arena_id, :court_id, :user_id, :customer_name, :customer_phone, :start_at, :end_at, :price, 'pending', 'app')
-                returning id, arena_id, court_id, user_id, customer_name, customer_phone,
-                          start_at, end_at, price, status, source
-            """), {**payload, "user_id": user_id, "price": price}).mappings().one()
-            return dict(row)
-    except IntegrityError as exc:
-        # PostgreSQL's exclusion constraint remains the final concurrent-write guard.
-        raise BookingConflictError from exc
+    """Reject the legacy path; paid app reservations are created by checkout only."""
+    del user_id, data
+    raise ValueError("Payment checkout is required before creating a reservation.")
 
 
 def cancel_player_reservation(
@@ -280,7 +242,7 @@ def cancel_player_reservation(
     session_factory = get_session_factory()
     with session_factory.begin() as session:
         reservation = session.execute(text("""
-            select id, status, start_at
+            select id, status, start_at, user_id, payment_id, booking_amount_paid
             from public.reservations
             where id = :reservation_id and user_id = :user_id
             for update
@@ -311,14 +273,16 @@ def cancel_player_reservation(
         }).mappings().one_or_none()
         if row is None:
             raise PlayerReservationCancellationConflictError
-        return {**dict(row), "previous_status": reservation["status"]}
+        refunded = credit_reservation_payment(session, dict(reservation), "Cancelamento solicitado pelo player")
+        return {**dict(row), "previous_status": reservation["status"], "credited_to_wallet": refunded}
 
 
 def list_player_reservations(user_id: str) -> list[dict[str, Any]]:
     factory = get_session_factory()
     with factory() as session:
         rows = session.execute(text("""
-            select r.id, r.start_at, r.end_at, r.price, r.status, r.source,
+            select r.id, r.start_at, r.end_at, r.price, r.court_price_total,
+                   r.booking_amount_paid, r.amount_due_at_venue, r.currency, r.status, r.source,
                    a.id as arena_id, a.name as arena_name, a.logo_path, c.id as court_id, c.name as court_name
             from public.reservations r join public.arenas a on a.id = r.arena_id
             join public.courts c on c.id = r.court_id
@@ -340,7 +304,10 @@ def get_reservation_notification(reservation_id: UUID) -> dict[str, Any] | None:
                      join public.sports s on s.id = cs.sport_id
                      where cs.court_id = r.court_id
                    ), 'Modalidade não informada') as sport_name,
-                   r.start_at, r.end_at, r.price
+                   r.start_at, r.end_at, r.price, r.court_price_total,
+                   r.booking_amount_paid, r.amount_due_at_venue,
+                   exists(select 1 from public.wallet_transactions wt
+                          where wt.reservation_id = r.id and wt.type = 'refund_credit') as credited_to_wallet
             from public.reservations r
             join public.arenas a on a.id = r.arena_id
             join public.courts c on c.id = r.court_id

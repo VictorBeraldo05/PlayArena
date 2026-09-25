@@ -6,6 +6,9 @@ from app.api.routes.auth import router as auth_router
 from app.api.routes.booking import router as booking_router
 from app.api.routes.owner import router as owner_router
 from app.api.routes.owner import sports_router
+from app.api.routes.payments import admin_router as payments_admin_router
+from app.api.routes.payments import router as payments_router
+from app.api.routes.payments import webhook_router as payments_webhook_router
 from app.api.routes.analytics import admin_router as analytics_admin_router
 from app.api.routes.analytics import router as analytics_router
 from fastapi import FastAPI, Request
@@ -66,6 +69,9 @@ def create_application() -> FastAPI:
     app.include_router(owner_router)
     app.include_router(analytics_router)
     app.include_router(analytics_admin_router)
+    app.include_router(payments_router)
+    app.include_router(payments_webhook_router)
+    app.include_router(payments_admin_router)
     return app
 
 

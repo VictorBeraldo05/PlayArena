@@ -126,6 +126,9 @@ class ReservationNotificationService:
             start_at=reservation["start_at"],
             end_at=reservation["end_at"],
             price=Decimal(reservation["price"]),
+            booking_amount_paid=Decimal(reservation.get("booking_amount_paid", 0)),
+            amount_due_at_venue=Decimal(reservation["amount_due_at_venue"]) if reservation.get("amount_due_at_venue") is not None else None,
+            credited_to_wallet=bool(reservation.get("credited_to_wallet", False)),
         )
 
 

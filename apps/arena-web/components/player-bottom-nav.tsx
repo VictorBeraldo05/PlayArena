@@ -9,7 +9,7 @@ const items = [
   { label: 'Buscar', href: '/buscar', icon: SearchIcon, active: (path: string) => path === '/buscar' || path === '/player' || path.startsWith('/player/arenas/') },
   { label: 'Nova reserva', href: '/nova-reserva', icon: PlusIcon, featured: true, active: (path: string) => path === '/nova-reserva' || path.startsWith('/nova-reserva/') || path === '/reservar' || path.startsWith('/reservar/') || path.startsWith('/buscar/disponibilidade') || path.startsWith('/buscar/resultados') },
   { label: 'Reservas', href: '/player/reservas', icon: CalendarIcon, active: (path: string) => path === '/player/reservas' || path.startsWith('/player/reservas/') },
-  { label: 'Perfil', href: '/player/perfil', icon: UserIcon, active: (path: string) => path === '/player/perfil' || path.startsWith('/player/perfil/') },
+  { label: 'Perfil', href: '/player/perfil', icon: UserIcon, active: (path: string) => path === '/player/perfil' || path.startsWith('/player/perfil/') || path === '/player/saldo' },
 ];
 
 export function PlayerBottomNav() {

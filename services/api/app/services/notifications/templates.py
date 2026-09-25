@@ -21,6 +21,9 @@ class ReservationEmailData:
     start_at: datetime
     end_at: datetime
     price: Decimal
+    booking_amount_paid: Decimal = Decimal("0.00")
+    amount_due_at_venue: Decimal | None = None
+    credited_to_wallet: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,8 @@ def notification_kind(previous_status: str, next_status: str) -> NotificationKin
 
 def render_reservation_email(reservation: ReservationEmailData, kind: NotificationKind, frontend_url: str) -> RenderedEmail:
     title, introduction, cta_label, cta_path = _copy_for(kind)
+    if kind in {"rejected", "cancelled"} and reservation.credited_to_wallet and reservation.booking_amount_paid > 0:
+        introduction += f" {format_currency_brl(reservation.booking_amount_paid)} voltaram para o seu Saldo PlayArena."
     cta_url = f"{frontend_url.rstrip('/')}{cta_path}"
     date_label = format_date_pt_br(reservation.start_at)
     time_label = f"{format_time_pt_br(reservation.start_at)} às {format_time_pt_br(reservation.end_at)}"
@@ -62,7 +67,13 @@ def render_reservation_email(reservation: ReservationEmailData, kind: Notificati
         ("Horário", time_label),
     )
     if kind == "confirmed":
-        details += (("Valor", price_label),)
+        details += (("Valor total", price_label),)
+        if reservation.booking_amount_paid > 0:
+            due = reservation.amount_due_at_venue if reservation.amount_due_at_venue is not None else reservation.price - reservation.booking_amount_paid
+            details += (
+                ("Pago no PlayArena", format_currency_brl(reservation.booking_amount_paid)),
+                ("Pagar na arena", format_currency_brl(due)),
+            )
 
     text_details = "\n".join(f"{label}: {value}" for label, value in details)
     html_details = "".join(

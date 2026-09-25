@@ -5,6 +5,7 @@ import { supabase } from './supabase';
 export const analyticsEventNames = [
   'app_opened', 'search_started', 'availability_searched', 'availability_results_viewed',
   'availability_no_results', 'arena_viewed', 'arena_schedule_viewed', 'reservation_started', 'reservation_login_required',
+  'checkout_started',
 ] as const;
 
 export type AnalyticsEventName = (typeof analyticsEventNames)[number];

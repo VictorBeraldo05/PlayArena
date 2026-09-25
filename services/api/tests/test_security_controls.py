@@ -113,8 +113,8 @@ def test_analytics_rejects_pii_and_unknown_properties() -> None:
 
 
 def test_analytics_database_constraint_accepts_every_api_event() -> None:
-    migration = Path(__file__).parents[3] / "supabase" / "migrations" / "202609170001_allow_arena_schedule_analytics.sql"
-    sql = migration.read_text(encoding="utf-8")
+    migrations = Path(__file__).parents[3] / "supabase" / "migrations"
+    sql = "\n".join(path.read_text(encoding="utf-8") for path in migrations.glob("*.sql"))
 
     assert all(f"'{event_name}'" in sql for event_name in get_args(AnalyticsEventName))
 

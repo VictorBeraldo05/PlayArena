@@ -1,8 +1,10 @@
 from functools import lru_cache
 import json
+from decimal import Decimal
+from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import Field, PositiveInt
+from pydantic import Field, PositiveInt, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_WEB_ORIGINS = (
@@ -64,6 +66,8 @@ class Settings(BaseSettings):
     analytics_rate_limit_per_minute: PositiveInt = Field(default=120, alias="ANALYTICS_RATE_LIMIT_PER_MINUTE")
     availability_rate_limit_per_minute: PositiveInt = Field(default=60, alias="AVAILABILITY_RATE_LIMIT_PER_MINUTE")
     reservation_rate_limit_per_minute: PositiveInt = Field(default=10, alias="RESERVATION_RATE_LIMIT_PER_MINUTE")
+    checkout_rate_limit_per_minute: PositiveInt = Field(default=10, alias="CHECKOUT_RATE_LIMIT_PER_MINUTE")
+    payment_webhook_rate_limit_per_minute: PositiveInt = Field(default=600, alias="PAYMENT_WEBHOOK_RATE_LIMIT_PER_MINUTE")
     owner_mutation_rate_limit_per_minute: PositiveInt = Field(default=90, alias="OWNER_MUTATION_RATE_LIMIT_PER_MINUTE")
     max_request_body_bytes: PositiveInt = Field(default=65536, alias="MAX_REQUEST_BODY_BYTES")
     email_notifications_enabled: bool = Field(default=False, alias="EMAIL_NOTIFICATIONS_ENABLED")
@@ -71,6 +75,16 @@ class Settings(BaseSettings):
     email_from: str | None = Field(default=None, alias="EMAIL_FROM")
     frontend_url: str = Field(default="http://localhost:3000", alias="FRONTEND_URL")
     email_request_timeout_seconds: PositiveInt = Field(default=5, alias="EMAIL_REQUEST_TIMEOUT_SECONDS")
+    booking_advance_amount: Decimal = Field(default=Decimal("5.00"), alias="BOOKING_ADVANCE_AMOUNT", gt=0)
+    payment_hold_minutes: PositiveInt = Field(default=10, alias="PAYMENT_HOLD_MINUTES")
+    payment_provider: Literal["disabled", "sandbox", "mercado_pago"] = Field(default="disabled", alias="PAYMENT_PROVIDER")
+    payment_environment: Literal["test", "production"] = Field(default="test", alias="PAYMENT_ENV")
+    payment_sandbox_enabled: bool = Field(default=False, alias="PAYMENT_SANDBOX_ENABLED")
+    payment_webhook_secret: str | None = Field(default=None, alias="PAYMENT_WEBHOOK_SECRET")
+    mercado_pago_access_token: str | None = Field(default=None, alias="MERCADO_PAGO_ACCESS_TOKEN")
+    mercado_pago_webhook_secret: str | None = Field(default=None, alias="MERCADO_PAGO_WEBHOOK_SECRET")
+    mercado_pago_return_url: str | None = Field(default=None, alias="MERCADO_PAGO_RETURN_URL")
+    mercado_pago_http_timeout_seconds: PositiveInt = Field(default=5, alias="MERCADO_PAGO_HTTP_TIMEOUT_SECONDS")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -82,6 +96,36 @@ class Settings(BaseSettings):
     @property
     def allowed_web_origins(self) -> list[str]:
         return parse_web_origins(self.web_origins if self.web_origins is not None else self.web_origin)
+
+    @property
+    def payment_provider_available(self) -> bool:
+        return self.payment_provider != "disabled" and self.payment_sandbox_enabled
+
+    @property
+    def mercado_pago_effective_return_url(self) -> str:
+        return self.mercado_pago_return_url or f"{self.frontend_url.rstrip('/')}/pagamento/retorno"
+
+    @model_validator(mode="after")
+    def validate_payment_configuration(self) -> "Settings":
+        if self.payment_provider == "disabled":
+            if self.payment_sandbox_enabled:
+                raise ValueError("PAYMENT_SANDBOX_ENABLED must be false when PAYMENT_PROVIDER is disabled.")
+            return self
+        if not self.payment_sandbox_enabled:
+            raise ValueError("PAYMENT_SANDBOX_ENABLED=true is required for non-production payment providers.")
+        if self.payment_environment != "test":
+            raise ValueError("Production payments are blocked in this release.")
+        if self.payment_provider == "sandbox" and not self.payment_webhook_secret:
+            raise ValueError("PAYMENT_WEBHOOK_SECRET is required for the sandbox provider.")
+        if self.payment_provider == "mercado_pago":
+            if not self.mercado_pago_access_token or not self.mercado_pago_webhook_secret:
+                raise ValueError(
+                    "MERCADO_PAGO_ACCESS_TOKEN and MERCADO_PAGO_WEBHOOK_SECRET are required."
+                )
+            return_url = urlparse(self.mercado_pago_effective_return_url)
+            if return_url.scheme != "https" or not return_url.netloc:
+                raise ValueError("Mercado Pago requires an absolute HTTPS return URL.")
+        return self
 
 
 @lru_cache

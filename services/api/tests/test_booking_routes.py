@@ -206,12 +206,20 @@ def test_only_player_role_can_create_or_list_reservations() -> None:
     assert booking.require_player(PLAYER_A, "player") == PLAYER_A
 
 
-def test_player_reservation_uses_authenticated_user_only(monkeypatch) -> None:
-    captured = {}
-    monkeypatch.setattr(booking, "create_player_reservation", lambda user_id, data: captured.update(user_id=user_id, data=data) or {"id": "r"})
-    booking.post_player_reservation(route_request(), reservation_request(), PLAYER_A)
-    assert captured["user_id"] == PLAYER_A.id
-    assert not {"arena_id", "end_at", "price", "status", "source"}.intersection(captured["data"])
+def test_legacy_player_reservation_endpoint_requires_payment(monkeypatch) -> None:
+    called = False
+
+    def legacy_create(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(booking, "create_player_reservation", legacy_create)
+    with pytest.raises(HTTPException) as error:
+        booking.post_player_reservation(route_request(), reservation_request(), PLAYER_A)
+
+    assert error.value.status_code == 409
+    assert error.value.detail["code"] == "payment_required"
+    assert not called
 
 
 def test_availability_rejects_past_start_time(create_client) -> None:

@@ -16,6 +16,7 @@ Este inventario apoia a criacao da Politica de Privacidade e dos Termos de Uso. 
 | Endereco IP | Rate limit e logs de infraestrutura | Memoria do processo durante a janela; possiveis logs de Render/Vercel | Infraestrutura e operadores autorizados | Janela minima do rate limit; revisar retencao dos provedores | Seguranca e disponibilidade |
 | Logo da arena | Identidade publica da arena | Supabase Storage `arena-assets` e `arenas.logo_path` | Leitura publica; escrita pelo owner autorizado | Enquanto a arena usar o servico ou ate remocao | Publicacao solicitada pelo owner |
 | Dados da arena/owner | Configuracao e autorizacao operacional | `arenas`, `arena_owners`, `courts` e configuracoes | Owner vinculado, backend e operadores autorizados | Enquanto a arena estiver ativa e durante periodo de suporte aprovado | Prestacao do servico para a arena |
+| Pagamento e credito | Confirmar antecipacao, reconciliar reserva e manter Saldo PlayArena | `payments`, `booking_holds`, `wallet_transactions` e snapshots em `reservations` | Player ve apenas os proprios registros; backend e admin operacional autorizado | Definir com revisao contabil, fiscal e juridica antes de producao | Execucao do checkout, auditoria e prevencao de duplicidade |
 
 ## Minimizacao confirmada
 
@@ -24,6 +25,8 @@ Este inventario apoia a criacao da Politica de Privacidade e dos Termos de Uso. 
 - A API publica de agenda nao devolve nome, telefone, `user_id`, `reservation_id` ou motivo de bloqueio.
 - O destinatario de e-mail e obtido server-side; requests nao podem escolher destinatario, remetente ou HTML.
 - Logs de aplicacao nao devem conter Authorization, JWT, e-mail, telefone, URL do banco ou chaves.
+- O PlayArena nao recebe numero de cartao, CVV ou credencial bruta; o provider deve hospedar ou tokenizar o pagamento.
+- Webhooks persistem apenas identificadores operacionais e hash SHA-256 do payload, nunca o payload financeiro bruto.
 
 ## Pendencias de interface e governanca
 
@@ -32,5 +35,6 @@ Este inventario apoia a criacao da Politica de Privacidade e dos Termos de Uso. 
 - Definir canal para solicitacao de acesso, correcao e exclusao.
 - Definir responsavel por aprovar retencao, atender incidentes e responder titulares.
 - Revisar DPA/termos de Supabase, Vercel, Render e Resend.
+- Validar termos de antecipacao, regras do Saldo PlayArena, cancelamento e retencao financeira com assessoria juridica/contabil antes de habilitar pagamento real.
 - Documentar se logs de infraestrutura persistem IP e por quanto tempo.
 - Criar procedimento de exclusao que trate Auth, perfil, analytics identificavel e backups sem destruir registros que precisem ser legalmente mantidos.

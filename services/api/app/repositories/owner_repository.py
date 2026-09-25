@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from app.db.session import get_session_factory
+from app.repositories.payment_repository import credit_reservation_payment, expire_stale_holds, lock_booking_slot
 
 
 class OwnerResourceNotFoundError(Exception):
@@ -341,10 +342,12 @@ def _owned_reservation(session: Any, user_id: str, reservation_id: UUID) -> dict
     reservation = session.execute(
         text(
             """
-            select r.id, r.arena_id, r.court_id, r.status
+            select r.id, r.arena_id, r.court_id, r.status, r.user_id,
+                   r.payment_id, r.booking_amount_paid
             from public.reservations r
             join public.arena_owners ao on ao.arena_id = r.arena_id
             where r.id = :reservation_id and ao.user_id = :user_id
+            for update of r
             """
         ),
         {"reservation_id": reservation_id, "user_id": user_id},
@@ -381,6 +384,13 @@ def create_blocked_slot(user_id: str, data: dict[str, Any]) -> dict[str, Any]:
     session_factory = get_session_factory()
     with session_factory.begin() as session:
         court = _owned_court(session, user_id, data["court_id"])
+        expire_stale_holds(session)
+        lock_booking_slot(session, data["court_id"], data["start_at"], data["end_at"])
+        held = session.execute(text("""select 1 from public.booking_holds where court_id=:court_id
+          and status='active' and expires_at > timezone('utc', now())
+          and hold_window && tstzrange(:start_at,:end_at,'[)')"""), data).scalar_one_or_none()
+        if held is not None:
+            raise ReservationConflictError
         return dict(session.execute(text("""insert into public.blocked_slots(court_id,start_at,end_at,reason,created_by) values(:court_id,:start_at,:end_at,:reason,:user_id) returning id,court_id,start_at,end_at,reason"""), {**data,"user_id":user_id}).mappings().one())
 
 
@@ -389,7 +399,21 @@ def create_manual_reservation(user_id: str, data: dict[str, Any]) -> dict[str, A
     try:
         with session_factory.begin() as session:
             court = _owned_court(session, user_id, data["court_id"])
-            return dict(session.execute(text("""insert into public.reservations(arena_id,court_id,customer_name,customer_phone,start_at,end_at,price,status,source,confirmed_at) values(:arena_id,:court_id,:customer_name,:customer_phone,:start_at,:end_at,:price,'confirmed','arena_manual',timezone('utc', now())) returning id,arena_id,court_id,customer_name,customer_phone,start_at,end_at,price,status,source"""), {**data,"arena_id":court["arena_id"]}).mappings().one())
+            expire_stale_holds(session)
+            lock_booking_slot(session, data["court_id"], data["start_at"], data["end_at"])
+            held = session.execute(text("""select 1 from public.booking_holds where court_id=:court_id
+              and status='active' and expires_at > timezone('utc', now())
+              and hold_window && tstzrange(:start_at,:end_at,'[)')"""), data).scalar_one_or_none()
+            if held is not None:
+                raise ReservationConflictError
+            return dict(session.execute(text("""insert into public.reservations(
+              arena_id,court_id,customer_name,customer_phone,start_at,end_at,price,status,source,confirmed_at,
+              court_price_total,booking_amount_paid,amount_due_at_venue,currency
+            ) values(
+              :arena_id,:court_id,:customer_name,:customer_phone,:start_at,:end_at,:price,'confirmed','arena_manual',timezone('utc', now()),
+              :price,0,:price,'BRL'
+            ) returning id,arena_id,court_id,customer_name,customer_phone,start_at,end_at,price,
+              court_price_total,booking_amount_paid,amount_due_at_venue,currency,status,source"""), {**data,"arena_id":court["arena_id"]}).mappings().one())
     except IntegrityError as exc:
         raise ReservationConflictError from exc
 
@@ -408,13 +432,20 @@ def update_reservation_status(user_id: str, reservation_id: UUID, next_status: s
               where id=:reservation_id and status=:current_status returning id,status"""), {"status":next_status,"reservation_id":reservation_id,"current_status":reservation["status"]}).mappings().one_or_none()
             if row is None:
                 raise ReservationConflictError
-            return {**dict(row), "previous_status": reservation["status"]}
+            refunded = False
+            if next_status == "cancelled":
+                reason = "Reserva nao confirmada pela arena" if reservation["status"] == "pending" else "Reserva cancelada pela arena"
+                refunded = credit_reservation_payment(session, reservation, reason)
+            return {**dict(row), "previous_status": reservation["status"], "credited_to_wallet": refunded}
     except IntegrityError as exc:
         raise ReservationConflictError from exc
 
 
 def list_owner_reservations(user_id: str) -> list[dict[str, Any]]:
-    return _rows("""select r.id,r.arena_id,r.court_id,r.customer_name,r.customer_phone,r.start_at,r.end_at,r.price,r.status,r.source,c.name court_name from public.reservations r join public.courts c on c.id=r.court_id join public.arena_owners ao on ao.arena_id=r.arena_id where ao.user_id=:user_id order by r.start_at desc""", {"user_id": user_id})
+    return _rows("""select r.id,r.arena_id,r.court_id,r.customer_name,r.customer_phone,r.start_at,r.end_at,
+      r.price,r.court_price_total,r.booking_amount_paid,r.amount_due_at_venue,r.currency,r.status,r.source,c.name court_name
+      from public.reservations r join public.courts c on c.id=r.court_id
+      join public.arena_owners ao on ao.arena_id=r.arena_id where ao.user_id=:user_id order by r.start_at desc""", {"user_id": user_id})
 
 
 def list_owner_blocked_slots(user_id: str) -> list[dict[str, Any]]:
@@ -510,7 +541,8 @@ def get_agenda_slots(user_id: str, day: date, court_id: UUID | None = None) -> l
               ) series
               where oh.active and oh.weekday = CAST(EXTRACT(DOW FROM CAST(:day AS date)) AS smallint)
             )
-            select s.*, r.id as reservation_id, r.customer_name, r.customer_phone, r.price, r.status, r.source,
+            select s.*, r.id as reservation_id, r.customer_name, r.customer_phone, r.price,
+                   r.court_price_total, r.booking_amount_paid, r.amount_due_at_venue, r.currency, r.status, r.source,
                    b.id as blocked_slot_id, b.reason as blocked_reason
             from slots s
             left join lateral (
