@@ -2,6 +2,7 @@ import inspect
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -51,6 +52,8 @@ def payment_row(**changes) -> dict:
         "wallet_amount": Decimal("0.00"),
         "provider_amount": Decimal("5.00"),
         "use_wallet_balance": False,
+        "wallet_debited": False,
+        "payment_method": "pix",
         "currency": "BRL",
         "arena_id": UUID("10000000-0000-0000-0000-000000000001"),
         "court_id": UUID("20000000-0000-0000-0000-000000000001"),
@@ -106,6 +109,10 @@ class WebhookSession:
             return Result()
         if sql.startswith("select exists("):
             return Result(scalar=self.conflict)
+        if "select coalesce(sum(wallet_amount), 0)" in sql:
+            return Result(scalar=Decimal("0.00"))
+        if "select coalesce(sum(amount), 0)" in sql:
+            return Result(scalar=Decimal("2.00"))
         if "insert into public.reservations" in sql:
             return Result({"id": "reservation-id", "status": "pending"})
         if "insert into public.wallet_transactions" in sql:
@@ -140,6 +147,7 @@ def webhook_event(
         amount=Decimal(amount),
         currency=currency,
         external_reference=external_reference,
+        payment_method="pix",
     )
 
 
@@ -278,6 +286,67 @@ def test_duplicate_mercado_pago_webhook_is_a_noop(monkeypatch) -> None:
     assert len(session.sql) == 1
 
 
+def test_mercado_pago_pix_event_rejects_another_method(monkeypatch) -> None:
+    session = WebhookSession()
+    monkeypatch.setattr(payment_repository, "get_session_factory", lambda: TransactionFactory(session))
+    event = ProviderWebhookEvent(
+        event_id="wrong-method",
+        provider_payment_id="sandbox_payment",
+        status="paid",
+        amount=Decimal("5.00"),
+        currency="BRL",
+        external_reference=str(PAYMENT_ID),
+        payment_method="credit_card",
+    )
+    result = payment_repository.process_provider_event("mercado_pago", event, b"wrong-method")
+    assert result["result"] == "payment_method_mismatch"
+    assert not any("insert into public.reservations" in sql for sql in session.sql)
+
+
+def test_player_polling_observes_webhook_winner_without_duplicate_reservation(monkeypatch) -> None:
+    pending = {
+        "payment_id": PAYMENT_ID, "provider": "mercado_pago", "payment_method": "pix",
+        "provider_payment_id": "ORDTST01", "provider_amount": Decimal("3.00"),
+        "currency": "BRL", "status": "pending", "expires_at": START_AT,
+    }
+    confirmed = {**pending, "status": "paid", "reservation_id": "reservation-1"}
+    rows = iter((pending, confirmed))
+    events = []
+    monkeypatch.setattr(service, "get_player_payment", lambda *_args: next(rows))
+    monkeypatch.setattr(service, "_mercado_pago_provider", lambda: SimpleNamespace(
+        get_payment=lambda _id: ProviderPaymentState(
+            provider_payment_id="ORDTST01", status="paid", status_detail="accredited",
+            amount=Decimal("3.00"), currency="BRL", external_reference=str(PAYMENT_ID),
+            payment_method="pix",
+        ),
+    ))
+    monkeypatch.setattr(service, "process_provider_event", lambda *_args: events.append(_args[1]) or {"result": "duplicate"})
+    result = service.get_player_payment_status(PLAYER.id, PAYMENT_ID)
+    assert result["reservation_id"] == "reservation-1"
+    assert len(events) == 1
+    assert events[0].amount == Decimal("3.00")
+    assert events[0].payment_method == "pix"
+
+
+def test_player_polling_keeps_async_order_pending_without_pix_details(monkeypatch) -> None:
+    payment = {
+        "payment_id": PAYMENT_ID, "provider": "mercado_pago", "payment_method": "pix",
+        "provider_payment_id": "ORD01ASYNC", "provider_amount": Decimal("5.00"),
+        "currency": "BRL", "status": "pending", "expires_at": START_AT,
+    }
+    monkeypatch.setattr(service, "get_player_payment", lambda *_args: payment)
+    monkeypatch.setattr(service, "_mercado_pago_provider", lambda: SimpleNamespace(
+        get_payment=lambda _id: ProviderPaymentState(
+            provider_payment_id="ORD01ASYNC", status="pending", status_detail="processing",
+            amount=Decimal("5.00"), currency="BRL", external_reference=str(PAYMENT_ID),
+        ),
+    ))
+    monkeypatch.setattr(service, "process_provider_event", lambda *_args: pytest.fail("No terminal event"))
+    result = service.get_player_payment_status(PLAYER.id, PAYMENT_ID)
+    assert result["status"] == "pending"
+    assert "instructions" not in result
+
+
 @pytest.mark.parametrize("payment", [payment_row(hold_expired=True), payment_row(hold_status="expired")])
 def test_late_payment_becomes_credit_instead_of_double_booking(monkeypatch, payment) -> None:
     session = WebhookSession(payment)
@@ -300,7 +369,7 @@ def test_provider_payment_arriving_after_payment_expiration_is_still_credited(mo
     assert any("insert into public.wallet_transactions" in sql for sql in session.sql)
 
 
-def test_late_mixed_payment_credits_wallet_and_provider_parts_once(monkeypatch) -> None:
+def test_late_mixed_payment_credits_only_paid_pix_when_wallet_was_not_debited(monkeypatch) -> None:
     session = WebhookSession(
         payment_row(
             status="expired",
@@ -325,7 +394,22 @@ def test_late_mixed_payment_credits_wallet_and_provider_parts_once(monkeypatch) 
         for sql, params in zip(session.sql, session.params, strict=True)
         if "insert into public.wallet_transactions" in sql and params
     ]
-    assert credit_amounts == [Decimal("2.00"), Decimal("3.00")]
+    assert credit_amounts == [Decimal("3.00")]
+
+
+def test_legacy_late_mixed_payment_restores_predebited_wallet_and_pix(monkeypatch) -> None:
+    session = WebhookSession(payment_row(
+        status="expired", hold_status="expired", hold_expired=True,
+        wallet_amount=Decimal("2.00"), provider_amount=Decimal("3.00"),
+        use_wallet_balance=True, wallet_debited=True,
+    ))
+    monkeypatch.setattr(payment_repository, "get_session_factory", lambda: TransactionFactory(session))
+
+    payment_repository.process_provider_event("sandbox", webhook_event(amount="3.00"), b"late-legacy")
+
+    credits = [params["amount"] for sql, params in zip(session.sql, session.params, strict=True)
+               if "insert into public.wallet_transactions" in sql and params]
+    assert credits == [Decimal("2.00"), Decimal("3.00")]
 
 
 def test_concurrent_slot_conflict_protects_payment_with_credit(monkeypatch) -> None:
@@ -335,7 +419,7 @@ def test_concurrent_slot_conflict_protects_payment_with_credit(monkeypatch) -> N
     result = payment_repository.process_provider_event("sandbox", webhook_event(), b"conflict")
 
     assert result["reservation_id"] is None
-    assert any("slot_unavailable_credited" in sql for sql in session.sql)
+    assert any(params and params.get("failure_code") == "slot_unavailable_credited" for params in session.params)
 
 
 def test_checkout_schema_rejects_price_and_amount_tampering() -> None:
@@ -388,6 +472,8 @@ def test_mixed_provider_webhook_validates_only_external_amount(monkeypatch) -> N
 
     assert result["reservation_id"] == "reservation-id"
     assert not any("checkout-wallet-release" in str(params) for params in session.params)
+    assert any(params and params.get("amount") == Decimal("-2.00") for params in session.params)
+    assert any("set wallet_debited=true" in sql for sql in session.sql)
 
 
 def test_mixed_provider_failure_releases_wallet_part_once(monkeypatch) -> None:
@@ -412,8 +498,7 @@ def test_mixed_provider_failure_releases_wallet_part_once(monkeypatch) -> None:
         for params in session.params
         if params and str(params.get("idempotency_key", "")).startswith("checkout-wallet-release:")
     ]
-    assert len(wallet_release) == 1
-    assert wallet_release[0]["amount"] == Decimal("2.00")
+    assert wallet_release == []
 
 
 def test_checkout_route_sources_payer_email_from_authenticated_user(monkeypatch) -> None:

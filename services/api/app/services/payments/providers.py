@@ -27,29 +27,44 @@ class PaymentProviderError(Exception):
 
 
 @dataclass(frozen=True)
+class PaymentInstructions:
+    type: Literal["pix"]
+    amount: Decimal
+    status: Literal["pending", "paid", "failed", "expired", "cancelled"]
+    qr_code: str
+    qr_code_base64: str
+    copy_paste: str
+    expires_at: datetime | None
+
+
+@dataclass(frozen=True)
 class ProviderPayment:
     provider_payment_id: str
     checkout_url: str | None
+    instructions: PaymentInstructions | None = None
 
 
 @dataclass(frozen=True)
 class ProviderPaymentState:
     provider_payment_id: str
-    status: Literal["pending", "paid", "failed", "cancelled"]
+    status: Literal["pending", "paid", "failed", "expired", "cancelled"]
     status_detail: str
     amount: Decimal
     currency: str
     external_reference: str
+    instructions: PaymentInstructions | None = None
+    payment_method: str | None = None
 
 
 @dataclass(frozen=True)
 class ProviderWebhookEvent:
     event_id: str
     provider_payment_id: str
-    status: Literal["pending", "paid", "failed", "cancelled"]
+    status: Literal["pending", "paid", "failed", "expired", "cancelled"]
     amount: Decimal
     currency: str
     external_reference: str | None = None
+    payment_method: str | None = None
 
 
 class PaymentProvider(Protocol):

@@ -9,11 +9,11 @@ from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 
 from app.services.payments.providers import (
+    PaymentInstructions,
     PaymentProviderError,
     ProviderPayment,
     ProviderPaymentState,
@@ -24,10 +24,11 @@ logger = logging.getLogger(__name__)
 
 MERCADO_PAGO_API_URL = "https://api.mercadopago.com"
 TRANSIENT_STATUS_CODES = {408, 423, 429, 500, 502, 503, 504}
+PIX_EXPIRATION = "PT30M"
 
 
 class MercadoPagoProvider:
-    """Checkout Pro Orders adapter locked to PlayArena's test environment."""
+    """Transparent Pix Orders adapter locked to PlayArena's test environment."""
 
     name = "mercado_pago"
 
@@ -36,7 +37,7 @@ class MercadoPagoProvider:
         *,
         access_token: str,
         webhook_secret: str,
-        return_url: str,
+        test_seller_id: str,
         timeout_seconds: float = 5.0,
         transport: httpx.BaseTransport | None = None,
         sleeper: Callable[[float], None] = time.sleep,
@@ -45,12 +46,11 @@ class MercadoPagoProvider:
             raise PaymentProviderError("Mercado Pago access token is not configured.")
         if not webhook_secret:
             raise PaymentProviderError("Mercado Pago webhook secret is not configured.")
-        parsed_return_url = urlparse(return_url)
-        if parsed_return_url.scheme != "https" or not parsed_return_url.netloc:
-            raise PaymentProviderError("Mercado Pago return URL must be an absolute HTTPS URL.")
+        if not test_seller_id:
+            raise PaymentProviderError("Mercado Pago test seller id is not configured.")
         self._access_token = access_token
         self._webhook_secret = webhook_secret.encode("utf-8")
-        self._return_url = return_url
+        self._test_seller_id = test_seller_id
         self._timeout = httpx.Timeout(timeout_seconds)
         self._transport = transport
         self._sleeper = sleeper
@@ -65,47 +65,30 @@ class MercadoPagoProvider:
         idempotency_key: str,
         payer_email: str | None = None,
     ) -> ProviderPayment:
-        del expires_at
+        del expires_at  # Stable payload for retries with the same provider idempotency key.
         normalized_amount = _money(amount)
         if currency != "BRL" or normalized_amount <= 0:
             raise PaymentProviderError("Mercado Pago order requires a positive BRL amount.")
+        if not payer_email:
+            raise PaymentProviderError("Pix requires the authenticated payer email.")
+        self._verify_test_seller()
         payload: dict[str, Any] = {
             "type": "online",
-            "processing_mode": "manual",
-            "capture_mode": "automatic_async",
+            "processing_mode": "automatic",
             "total_amount": format(normalized_amount, ".2f"),
             "external_reference": payment_id,
             "description": "Reserva PlayArena",
-            "items": [
-                {
-                    "title": "Reserva PlayArena",
-                    "quantity": 1,
-                    "unit_measure": "unit",
-                    "unit_price": format(normalized_amount, ".2f"),
-                    "total_amount": format(normalized_amount, ".2f"),
-                }
-            ],
-            "config": {
-                "online": {
-                    "success_url": self._build_return_url(payment_id, "success"),
-                    "failure_url": self._build_return_url(payment_id, "failure"),
-                    "pending_url": self._build_return_url(payment_id, "pending"),
-                    "auto_return": "all",
-                },
-                "payment_method": {
-                    "not_allowed_types": [
-                        "account_money",
-                        "credit_card",
-                        "debit_card",
-                        "prepaid_card",
-                        "ticket",
-                        "digital_currency",
-                    ]
-                },
+            "transactions": {
+                "payments": [
+                    {
+                        "amount": format(normalized_amount, ".2f"),
+                        "payment_method": {"id": "pix", "type": "bank_transfer"},
+                        "expiration_time": PIX_EXPIRATION,
+                    }
+                ]
             },
         }
-        if payer_email:
-            payload["payer"] = {"email": payer_email}
+        payload["payer"] = {"email": payer_email}
 
         data = self._request_json(
             "POST",
@@ -114,8 +97,8 @@ class MercadoPagoProvider:
             idempotency_key=idempotency_key,
             indeterminate_on_failure=True,
         )
+        self._require_test_response(data, indeterminate=True)
         state = self._parse_order(data)
-        self._require_test_order(state.provider_payment_id, indeterminate=True)
         if state.external_reference != payment_id:
             raise PaymentProviderError(
                 "Mercado Pago returned an unexpected external reference.",
@@ -128,17 +111,18 @@ class MercadoPagoProvider:
                 code="provider_response_mismatch",
                 indeterminate=True,
             )
-        checkout_url = data.get("checkout_url")
-        if not isinstance(checkout_url, str) or not _is_mercado_pago_checkout_url(checkout_url):
+        payment_method = _first_payment(data).get("payment_method")
+        awaiting_pix_details = data.get("status") in {"processing", "created"} and not _first_payment(data)
+        if not awaiting_pix_details and (not isinstance(payment_method, dict) or payment_method.get("id") != "pix"):
             raise PaymentProviderError(
-                "Mercado Pago did not return a safe checkout URL.",
+                "Mercado Pago did not create a Pix transaction.",
                 code="provider_response_mismatch",
                 indeterminate=True,
             )
-        if data.get("live_mode") is True:
+        if state.status == "pending" and state.instructions is None and not awaiting_pix_details:
             raise PaymentProviderError(
-                "Production Mercado Pago orders are blocked.",
-                code="production_payment_blocked",
+                "Mercado Pago did not return Pix instructions.",
+                code="provider_response_mismatch",
                 indeterminate=True,
             )
         logger.info(
@@ -146,23 +130,26 @@ class MercadoPagoProvider:
             state.provider_payment_id,
             payment_id,
         )
-        return ProviderPayment(state.provider_payment_id, checkout_url)
+        return ProviderPayment(state.provider_payment_id, None, state.instructions)
+
+    def _verify_test_seller(self) -> None:
+        account = self._request_json("GET", "https://api.mercadolibre.com/users/me")
+        if str(account.get("id")) != self._test_seller_id:
+            raise PaymentProviderError(
+                "Mercado Pago credential does not belong to the configured test seller.",
+                code="production_payment_blocked",
+            )
 
     def get_payment(self, provider_payment_id: str) -> ProviderPaymentState:
         if not provider_payment_id or "/" in provider_payment_id:
             raise PaymentProviderError("Invalid Mercado Pago order id.")
         data = self._request_json("GET", f"/v1/orders/{provider_payment_id}")
+        self._require_test_response(data)
         state = self._parse_order(data)
         if state.provider_payment_id != provider_payment_id:
             raise PaymentProviderError(
                 "Mercado Pago returned a different order id.",
                 code="provider_response_mismatch",
-            )
-        self._require_test_order(state.provider_payment_id)
-        if data.get("live_mode") is True:
-            raise PaymentProviderError(
-                "Production Mercado Pago orders are blocked.",
-                code="production_payment_blocked",
             )
         logger.info(
             "payment.provider_status provider=mercado_pago provider_order_id=%s status=%s",
@@ -195,7 +182,7 @@ class MercadoPagoProvider:
                 raise ValueError("data.id")
             if body.get("type") != "order":
                 raise ValueError("type")
-            if body.get("live_mode") is not False:
+            if body.get("live_mode") is not False or str(body.get("user_id")) != self._test_seller_id:
                 raise PaymentProviderError(
                     "Production Mercado Pago webhook is blocked.",
                     code="production_payment_blocked",
@@ -213,6 +200,7 @@ class MercadoPagoProvider:
             amount=state.amount,
             currency=state.currency,
             external_reference=state.external_reference,
+            payment_method=state.payment_method,
         )
 
     def _verify_signature(self, signature: str, request_id: str, data_id: str) -> None:
@@ -303,9 +291,19 @@ class MercadoPagoProvider:
         try:
             provider_payment_id = str(data["id"])
             provider_status = str(data["status"])
-            status_detail = str(data.get("status_detail") or "")
+            payment = _first_payment(data)
+            status_detail = str(data.get("status_detail") or payment.get("status_detail") or "")
             amount = _money(data["total_amount"])
-            currency = str(data["currency"])
+            if payment and _money(payment["amount"]) != amount:
+                raise ValueError("transaction amount")
+            payment_method = payment.get("payment_method")
+            country = data.get("country_code")
+            if country is not None and country != "BRA":
+                raise ValueError("country_code")
+            raw_currency = data.get("currency") or data.get("currency_id") or payment.get("currency_id")
+            if raw_currency is None and country != "BRA":
+                raise ValueError("currency")
+            currency = str(raw_currency or "BRL")
             external_reference = str(data["external_reference"])
         except (KeyError, TypeError, ValueError, InvalidOperation) as exc:
             raise PaymentProviderError(
@@ -317,14 +315,29 @@ class MercadoPagoProvider:
             status = "paid"
         elif provider_status == "failed":
             status = "failed"
-        elif provider_status in {"canceled", "expired", "refunded"} or status_detail in {
-            "expired",
+        elif provider_status == "expired" or status_detail == "expired":
+            status = "expired"
+        elif provider_status in {"canceled", "cancelled", "refunded"} or status_detail in {
             "refunded",
             "partially_refunded",
         }:
             status = "cancelled"
         else:
             status = "pending"
+        instructions = None
+        if isinstance(payment_method, dict) and payment_method.get("id") == "pix":
+            qr_code = payment_method.get("qr_code")
+            qr_code_base64 = payment_method.get("qr_code_base64")
+            if isinstance(qr_code, str) and qr_code:
+                instructions = PaymentInstructions(
+                    type="pix",
+                    amount=amount,
+                    status=status,
+                    qr_code=qr_code,
+                    qr_code_base64=qr_code_base64 if isinstance(qr_code_base64, str) else "",
+                    copy_paste=qr_code,
+                    expires_at=None,
+                )
         return ProviderPaymentState(
             provider_payment_id=provider_payment_id,
             status=status,
@@ -332,31 +345,31 @@ class MercadoPagoProvider:
             amount=amount,
             currency=currency,
             external_reference=external_reference,
+            instructions=instructions,
+            payment_method=payment_method.get("id") if isinstance(payment_method, dict) else None,
         )
 
-    @staticmethod
-    def _require_test_order(provider_payment_id: str, *, indeterminate: bool = False) -> None:
-        if not provider_payment_id.startswith("ORDTST"):
+    def _require_test_response(self, data: dict[str, Any], *, indeterminate: bool = False) -> None:
+        if (
+            data.get("live_mode") is True
+            or str(data.get("user_id")) != self._test_seller_id
+            or not str(data.get("id", "")).startswith("ORD")
+        ):
             raise PaymentProviderError(
                 "Production Mercado Pago orders are blocked.",
                 code="production_payment_blocked",
                 indeterminate=indeterminate,
             )
 
-    def _build_return_url(self, payment_id: str, result: str) -> str:
-        parsed = urlparse(self._return_url)
-        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-        query.update({"payment_id": payment_id, "result": result})
-        return urlunparse(parsed._replace(query=urlencode(query)))
-
-
 def _money(value: object) -> Decimal:
     return Decimal(str(value)).quantize(Decimal("0.01"))
 
 
-def _is_mercado_pago_checkout_url(value: str) -> bool:
-    parsed = urlparse(value)
-    host = (parsed.hostname or "").lower()
-    return parsed.scheme == "https" and (
-        host == "mercadopago.com.br" or host.endswith(".mercadopago.com.br")
-    )
+def _first_payment(data: dict[str, Any]) -> dict[str, Any]:
+    transactions = data.get("transactions")
+    if not isinstance(transactions, dict):
+        return {}
+    payments = transactions.get("payments")
+    if not isinstance(payments, list) or not payments or not isinstance(payments[0], dict):
+        return {}
+    return payments[0]

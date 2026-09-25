@@ -1,109 +1,65 @@
-# Mercado Pago Checkout Pro/Orders
+# Mercado Pago Pix transparente (Orders API)
 
-## Escopo seguro
+## Escopo e seguranca
 
-Esta integracao usa a Orders API real do Mercado Pago apenas em test mode. O PlayArena nunca recebe numero de cartao, CVV ou credencial bruta. O comprador e redirecionado ao checkout hospedado e a reserva so e criada depois de webhook assinado, consulta server-side da Order e validacao de valor, moeda e `external_reference`.
+O checkout de `/reservar` usa Pix na propria tela, sem redirect. O backend cria uma Order `online` com `processing_mode=automatic` e transacao `payment_method.id=pix`, guarda o ID da Order e o vencimento do Pix e devolve QR Code/copia e cola ao player autenticado. QR e codigo nao sao persistidos no banco. A reserva so e criada apos consulta server-side da Order, com valor, moeda e `external_reference` conferidos. O body do webhook nunca e fonte de status financeiro.
 
-Producao esta bloqueada por configuracao: `PAYMENT_ENV` deve ser `test`, `PAYMENT_SANDBOX_ENABLED` deve ser `true`, somente IDs de Order de teste `ORDTST...` podem gerar redirect e webhooks com `live_mode` diferente de `false` sao rejeitados. Como o formato do Access Token nao prova localmente se a credencial veio da aba de teste, o operador deve copiar exclusivamente a credencial indicada abaixo.
+Esta release **aceita apenas teste**: `PAYMENT_ENV=test`, `PAYMENT_SANDBOX_ENABLED=true`, `GET https://api.mercadolibre.com/users/me` antes de criar qualquer Order para conferir `MERCADO_PAGO_TEST_SELLER_ID`, vendedor da Order igual ao mesmo ID e `live_mode=false` no webhook. Orders Pix de teste podem ter ID `ORD01...` e nao trazer `live_mode` na resposta; por isso nao se usa prefixo de Order para inferir ambiente. O token de teste deve ser obtido no painel do Mercado Pago; o prefixo do token tambem nao prova o ambiente. Nunca colocar Access Token ou segredo de webhook no frontend, em `NEXT_PUBLIC_*`, logs ou commits.
 
-## Endpoints oficiais
+Documentacao oficial: [Pix via Orders API](https://www.mercadopago.com.br/developers/pt/docs/checkout-api-orders/payment-integration/pix), [consulta de Order](https://www.mercadopago.com.br/developers/pt/reference/online-payments/checkout-api/get-order/get), [webhooks](https://www.mercadopago.com.br/developers/pt/docs/checkout-api-orders/optional-notifications).
 
-- Criar Order: `POST https://api.mercadopago.com/v1/orders`.
-- Consultar Order: `GET https://api.mercadopago.com/v1/orders/{id}`.
-- Header privado: `Authorization: Bearer <MERCADO_PAGO_ACCESS_TOKEN>`.
-- Idempotencia: `X-Idempotency-Key` recebe a chave estavel do checkout PlayArena.
-- Referencia: `external_reference` recebe somente o UUID interno de `payments.id`.
-- Item: `Reserva PlayArena`, quantidade 1 e valor calculado pelo backend.
-
-Referencias oficiais: [criar Order](https://www.mercadopago.com.br/developers/pt/docs/checkout-pro-orders/create-order), [obter Order](https://www.mercadopago.com.br/developers/pt/reference/online-payments/checkout-pro/get-order/get), [URLs de retorno](https://www.mercadopago.com.br/developers/pt/docs/checkout-pro-orders/web-integration/configure-back-urls) e [notificacoes](https://www.mercadopago.com.br/developers/pt/docs/checkout-pro-orders/notifications).
-
-## Credenciais de teste
-
-1. Acesse Mercado Pago Developers.
-2. Abra `Suas integracoes` e selecione a aplicacao.
-3. Entre em `Dados da integracao` > `Credenciais de teste`.
-4. Copie o Access Token de teste para o secret `MERCADO_PAGO_ACCESS_TOKEN` no Render.
-5. Em `Webhooks` > `Configurar notificacoes`, revele a chave secreta e salve-a como `MERCADO_PAGO_WEBHOOK_SECRET`.
-
-Nunca coloque esses valores em `.env.example`, Vercel, `NEXT_PUBLIC_*`, logs, screenshots ou commits.
-
-## Configuracao Render de homologacao
+## Configuracao de teste no Render
 
 ```env
 BOOKING_ADVANCE_AMOUNT=5.00
-PAYMENT_HOLD_MINUTES=10
+PAYMENT_HOLD_MINUTES=31
 PAYMENT_PROVIDER=mercado_pago
 PAYMENT_ENV=test
 PAYMENT_SANDBOX_ENABLED=true
 MERCADO_PAGO_ACCESS_TOKEN=<access-token-de-teste>
-MERCADO_PAGO_WEBHOOK_SECRET=<secret-do-webhook-de-teste>
-MERCADO_PAGO_RETURN_URL=https://useplayarena.com.br/pagamento/retorno
+MERCADO_PAGO_WEBHOOK_SECRET=<segredo-do-webhook-de-teste>
+MERCADO_PAGO_TEST_SELLER_ID=<user-id-do-vendedor-de-teste>
 MERCADO_PAGO_HTTP_TIMEOUT_SECONDS=5
-FRONTEND_URL=https://useplayarena.com.br
 ```
 
-Semantica das flags:
+O Pix tem duracao fixa de 30 minutos para manter o payload idempotente. Seu vencimento e salvo em `payments.pix_expires_at`, portanto continua correto mesmo apos refresh ou mudanca de configuracao. O hold efetivo do Mercado Pago e de no minimo 31 minutos, garantindo margem de aproximadamente um minuto. Se `PAYMENT_HOLD_MINUTES` for maior, o hold fica maior, mas o Pix permanece em 30 minutos; o webhook de expiracao libera o hold antecipadamente. `MERCADO_PAGO_RETURN_URL` nao e usada. `PAYMENT_WEBHOOK_SECRET` continua exclusivo do sandbox interno.
 
-- `PAYMENT_PROVIDER` escolhe um unico adapter: `disabled`, `sandbox` ou `mercado_pago`.
-- `PAYMENT_SANDBOX_ENABLED=true` e a confirmacao explicita de que providers nao produtivos podem executar.
-- `PAYMENT_ENV=test` e obrigatorio para qualquer provider nesta release; `production` impede o startup.
-- `PAYMENT_WEBHOOK_SECRET` pertence somente ao sandbox interno.
-- `MERCADO_PAGO_WEBHOOK_SECRET` pertence somente ao mecanismo oficial do Mercado Pago.
-
-## Webhook
-
-Cadastre no painel do Mercado Pago em `Webhooks` > `Configurar notificacoes`, no campo indicado atualmente pela documentacao como `Modo produtivo`, e selecione o evento `Order (Mercado Pago)`:
+No painel do Mercado Pago, em `Suas integracoes` > aplicacao > `Credenciais de teste`, copie o Access Token e o User ID do vendedor de teste para os secrets do Render. Em `Webhooks`, configure notificacoes de **Order** para:
 
 ```text
 https://playarena-iwp9.onrender.com/payments/webhooks/mercado-pago
 ```
 
-O destino e o backend Render, nunca o frontend Vercel. CORS nao participa do webhook server-to-server. A rota valida `x-signature`, `x-request-id`, query params `data.id` e `type=order` usando o manifesto oficial `id:<data.id>;request-id:<x-request-id>;ts:<ts>;` e HMAC-SHA256 em tempo constante.
+Obtenha a chave de assinatura no mesmo painel. O destino e o backend, nao o Vercel. O endpoint exige `x-signature`, `x-request-id`, `data.id` e `type=order`; valida HMAC-SHA256 e consulta `GET /v1/orders/{id}`. Notificacoes produtivas sao bloqueadas. Um simulador generico pode enviar `live_mode=true` e receber `401` por design.
 
-Esse cadastro no painel nao habilita pagamentos produtivos no PlayArena. As credenciais, o comprador e as Orders continuam sendo de teste, e o backend aceita somente `live_mode=false` e IDs `ORDTST...`. O simulador generico do painel pode montar um exemplo `live_mode=true`; nesse caso, o `401` e o bloqueio esperado desta release. Valide o fluxo completo com uma Order de teste real e use a reconciliacao admin se a notificacao demorar.
+## Fluxo e carteira
 
-Depois da assinatura, o backend ignora qualquer alegacao de status do body e executa `GET /v1/orders/{id}`. Somente `processed/accredited`, com Order ID, `external_reference`, `BRL` e valor esperados, pode converter o hold em reserva.
+1. `GET /player/checkout/quote` calcula preco, credito disponivel e parcelas no servidor.
+2. `POST /player/checkout` cria o hold e uma Order Pix idempotente para o **valor restante**. A API devolve `instructions.qr_code_base64` quando houver imagem e `instructions.copy_paste` quando o codigo estiver pronto, sem expor o Access Token. Uma Order ainda em `processing` fica pendente com ID salvo e recebe as instrucoes depois por GET.
+3. `/reservar` exibe QR e copia e cola, consulta `GET /player/payments/{id}` a cada 2 segundos por tempo limitado e recupera a cobranca ao recarregar. Consulta frequente nao cria Order nova.
+4. `processed/accredited` confirmado por GET converte hold em reserva. Para pagamento misto, o saldo e reservado logicamente e debitado apenas na mesma transacao que cria a reserva apos o Pix pago.
+5. Pix recusado/expirado libera o hold sem debitar saldo. Uma nova tentativa usa nova chave de idempotencia.
+6. Pix pago apos vencimento, conflito de slot ou falta inesperada de saldo gera credito protegido apenas do valor realmente pago ao provider. Nao cria reserva.
 
-## Retorno e estados
+Sem saldo: Pix R$ 5,00. Saldo R$ 2,00: Pix R$ 3,00. Saldo R$ 5,00 ou mais: debito integral de R$ 5,00 sem Pix. Com saldo parcial, o player pode optar por nao usa-lo, gerando Pix integral.
 
-As URLs `success_url`, `failure_url` e `pending_url` apontam para `/pagamento/retorno` com o UUID interno do payment. Query params do Mercado Pago nao aprovam o pagamento. A tela consulta `GET /player/payments/{id}` usando o usuario autenticado e faz polling limitado.
+## Homologacao
 
-- `pending`: continua processando, sem reserva.
-- `paid`: reserva `pending` criada atomicamente.
-- `failed` ou `cancelled`: hold liberado e nenhuma reserva criada.
-- pagamento aprovado apos hold expirado ou com slot perdido: payment fica pago e R$ 5 sao creditados uma vez no Saldo PlayArena.
+1. Aplicar a migration `202609250002_transparent_pix_wallet_reservations.sql` **antes** do deploy da API.
+2. Configurar apenas credenciais e comprador de teste do mesmo pais; nunca usar dinheiro real neste ambiente.
+3. Criar Pix sem saldo e confirmar QR/copia e cola sem navegacao externa. Em alguns testes o provider retorna apenas o codigo, sem imagem de QR; o copia e cola deve permanecer utilizavel.
+4. Confirmar um pagamento; verificar uma unica reserva, valor pago e valor restante na arena.
+5. Testar saldo 0/2/5/20, opcao de nao usar saldo, recusado, expirado e refresh da tela.
+6. Repetir webhook e polling; verificar ausencia de reserva, debito e credito duplicados.
+7. Testar Pix pago apos expiracao e conflito de slot; verificar credito protegido e ausencia de reserva.
+8. Verificar `/admin/payments`, coluna Metodo, Order mascarada e reconciliacao sem divergencias.
 
-Recusa ou cancelamento de reserva continua gerando credito interno. Nao existe refund bancario automatico nesta versao.
+`POST /admin/payments/{payment_id}/reconcile` exige role admin e reconsulta a Order; nao aceita status informado pelo operador. A rotina de teste automatizado usa respostas mockadas e **nao** substitui a homologacao real com conta de teste do Mercado Pago.
 
-## Contas e pagamentos de teste
+## Diagnostico
 
-Use sempre duas contas de teste do mesmo pais: vendedor de teste para a aplicacao e comprador de teste para abrir o `checkout_url`. Obtenha usuario, senha, e-mail e codigo em `Suas integracoes` > aplicacao > `Contas de teste`. Use janela anonima para evitar sessao de uma conta real.
-
-Nao hardcode cartoes no repositorio. Consulte os dados vigentes em [cartoes e compras de teste](https://www.mercadopago.com.br/developers/pt/docs/checkout-pro-preferences/integration-test/test-purchases) no momento da homologacao.
-
-## Reconciliacao
-
-`POST /admin/payments/{payment_id}/reconcile` exige role `admin`. A acao consulta a Order, nao recebe status do operador e reaplica o mesmo processador idempotente do webhook. O painel mostra Order mascarada, pendencias vencidas e pagamentos pagos sem reserva ou credito.
-
-## Checklist de homologacao
-
-1. Aplicar as migrations financeiras antes do deploy da API.
-2. Configurar apenas credenciais de teste no Render.
-3. Cadastrar o webhook HTTPS e simular uma notificacao.
-4. Criar checkout com comprador de teste e conferir redirect hospedado.
-5. Validar cenarios aprovado, pendente, recusado, abandono e webhook duplicado.
-6. Confirmar que owner so recebe a reserva depois de `paid`.
-7. Confirmar total, pago no PlayArena e valor a receber na arena.
-8. Confirmar saldo idempotente quando um pagamento aprovado perde o slot.
-9. Abrir `/admin/payments` e zerar divergencias de reconciliacao.
-10. Manter `PAYMENT_ENV=test`; nao usar credencial produtiva.
-
-## Troubleshooting
-
-- `401` no webhook: confira secret, `data.id`, `x-request-id`, topico Order e ambiente da aplicacao.
-- `503` no webhook: Mercado Pago estava indisponivel; a resposta induz retry sem alterar o payment.
-- checkout sem URL: confira Access Token de teste, HTTPS da return URL e logs por `payment_id`/Order ID.
-- payment pendente apos retorno: aguarde webhook, confira a configuracao e use a reconciliacao admin.
-- `production_payment_blocked`: uma Order/notificacao produtiva foi detectada; interrompa a homologacao e revise a credencial.
-
-Nenhum teste automatizado chama a internet. A prova integrada real deve ser feita manualmente com a aplicacao e as contas de teste do Mercado Pago.
+- `401` no webhook: confira segredo, headers, `data.id`, topico Order e `live_mode`.
+- `503` no webhook ou consulta: provider indisponivel; tente novamente com a mesma cobranca, sem novo POST.
+- Order sem instrucoes: confira token de teste, formato do request e logs pelo `payment_id`/Order ID; nao registre QR/codigo.
+- Pagamento pendente: confira webhook e use reconciliacao admin. O player pode reabrir `/reservar` e consultar novamente.
+- `production_payment_blocked`: interrompa a homologacao e revise credencial/ambiente.

@@ -12,6 +12,7 @@ import { usePageReadyResource } from '../../../providers/page-ready-provider';
 type PaymentRow = {
   id: string;
   provider: string;
+  payment_method: string;
   provider_payment_id?: string | null;
   amount: string | number;
   currency: 'BRL';
@@ -159,12 +160,13 @@ export default function AdminPaymentsPage() {
                 <span className="text-xs text-[#9DA7B3]">Sem dados bancários</span>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[980px] text-left text-sm">
+                <table className="w-full min-w-[1060px] text-left text-sm">
                   <thead className="text-[10px] uppercase tracking-[.12em] text-[#9DA7B3]">
                     <tr>
                       <th className="px-5 py-3">Data</th>
                       <th className="px-5 py-3">Arena</th>
                       <th className="px-5 py-3">Provider</th>
+                      <th className="px-5 py-3">MÃ©todo</th>
                       <th className="px-5 py-3">Order</th>
                       <th className="px-5 py-3">Status</th>
                       <th className="px-5 py-3">Reserva</th>
@@ -181,6 +183,9 @@ export default function AdminPaymentsPage() {
                         <td className="px-5 py-4 font-bold">{payment.arena_name}</td>
                         <td className="px-5 py-4 text-[#C3CDD7]">
                           {payment.provider === 'mercado_pago' ? 'Mercado Pago' : payment.provider}
+                        </td>
+                        <td className="px-5 py-4 text-[#C3CDD7]">
+                          {payment.payment_method === 'pix' ? 'PIX' : payment.payment_method === 'checkout_pro' ? 'Checkout Pro' : payment.payment_method === 'wallet' ? 'Saldo' : 'Sandbox'}
                         </td>
                         <td className="px-5 py-4 font-mono text-xs text-[#9DA7B3]">
                           {maskProviderOrder(payment.provider_payment_id)}

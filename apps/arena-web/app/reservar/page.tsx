@@ -2,6 +2,7 @@
 
 import { FormEvent, Suspense, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import Image from 'next/image';
 
 import { ArenaMedia } from '../../components/arena-media';
 import { useAuth } from '../../components/use-auth';
@@ -78,13 +79,23 @@ type CheckoutPayment = CheckoutQuote & {
   reservation_id?: string | null;
   checkout_url?: string | null;
   expires_at: string;
+  instructions?: {
+    type: 'pix';
+    amount: string | number;
+    status: 'pending' | 'paid' | 'failed' | 'expired' | 'cancelled';
+    qr_code: string;
+    qr_code_base64: string;
+    copy_paste: string;
+    expires_at: string | null;
+  } | null;
 };
-type CheckoutStage = 'review' | 'processing' | 'failed' | 'success';
+type CheckoutStage = 'review' | 'processing' | 'pix' | 'failed' | 'success' | 'protected';
 type StoredCheckoutAttempt = {
   key: string;
   courtId: string;
   startAt: string;
   useWalletBalance: boolean;
+  paymentId?: string;
 };
 
 function storedIntent(): ReservationIntent | null {
@@ -106,6 +117,7 @@ function storedCheckoutAttempt(intent: ReservationIntent): StoredCheckoutAttempt
       courtId?: string;
       startAt?: string;
       useWalletBalance?: boolean;
+      paymentId?: string;
     } | null;
     if (!stored?.key || stored.courtId !== intent.courtId || stored.startAt !== intent.startAt)
       return null;
@@ -114,6 +126,7 @@ function storedCheckoutAttempt(intent: ReservationIntent): StoredCheckoutAttempt
       courtId: stored.courtId,
       startAt: stored.startAt,
       useWalletBalance: Boolean(stored.useWalletBalance),
+      paymentId: stored.paymentId,
     };
   } catch {
     return null;
@@ -129,6 +142,13 @@ function persistCheckoutKey(intent: ReservationIntent, key: string, useWalletBal
 
 function clearCheckoutKey() {
   window.sessionStorage.removeItem(PENDING_CHECKOUT_KEY);
+}
+
+function persistPaymentId(paymentId: string) {
+  const raw = window.sessionStorage.getItem(PENDING_CHECKOUT_KEY);
+  if (!raw) return;
+  const stored = JSON.parse(raw) as StoredCheckoutAttempt;
+  window.sessionStorage.setItem(PENDING_CHECKOUT_KEY, JSON.stringify({ ...stored, paymentId }));
 }
 
 function friendlyDate(value: string) {
@@ -168,8 +188,12 @@ function ReservationPage() {
   );
   const [quoteRefreshing, setQuoteRefreshing] = useState(false);
   const [quoteReloadVersion, setQuoteReloadVersion] = useState(0);
+  const [resumePaymentId, setResumePaymentId] = useState(storedAttempt?.paymentId ?? null);
+  const [resumeVersion, setResumeVersion] = useState(0);
+  const [pollVersion, setPollVersion] = useState(0);
+  const [pollError, setPollError] = useState('');
   const [checkoutAttemptLocked, setCheckoutAttemptLocked] = useState(Boolean(storedAttempt));
-  const [stage, setStage] = useState<CheckoutStage>('review');
+  const [stage, setStage] = useState<CheckoutStage>(storedAttempt?.paymentId ? 'processing' : 'review');
   const [error, setError] = useState('');
   const idempotencyKey = useRef<string>(storedAttempt?.key ?? '');
   const submissionLock = useRef(false);
@@ -183,14 +207,22 @@ function ReservationPage() {
   );
   const profileComplete = Boolean(profile?.full_name?.trim() && profile?.phone?.trim());
   const profileError = Boolean(session && !isLoading && !profile);
-  const quoteLoading = Boolean(session && profileComplete && !quote && !error);
+  const quoteLoading = Boolean(session && profileComplete && !quote && !error && !resumePaymentId);
+  const paymentId = payment?.payment_id;
+  const paymentStatus = payment?.status;
   usePageReadyResource(
     'checkout-intent',
-    validIntent && !isLoading && (!session || Boolean(quote || error)),
+    validIntent && !isLoading && (!session || Boolean(quote || error || payment || resumePaymentId)),
   );
 
   useEffect(() => {
-    if (!session || !profileComplete || !validIntent) return;
+    if (isLoading || session || !resumePaymentId) return;
+    window.sessionStorage.setItem(PENDING_RESERVATION_KEY, JSON.stringify(intent));
+    router.replace('/login?returnTo=/reservar');
+  }, [intent, isLoading, resumePaymentId, router, session]);
+
+  useEffect(() => {
+    if (!session || !profileComplete || !validIntent || resumePaymentId) return;
     let active = true;
     const query = new URLSearchParams({
       court_id: intent.courtId,
@@ -211,6 +243,11 @@ function ReservationPage() {
       .catch((requestError) => {
         if (!active) return;
         setQuoteRefreshing(false);
+        if (idempotencyKey.current) {
+          setError('Uma tentativa de pagamento já foi iniciada. Retome-a sem gerar outra cobrança.');
+          setStage('failed');
+          return;
+        }
         const unavailable = requestError instanceof ApiRequestError && requestError.status === 409;
         setError(
           unavailable
@@ -227,10 +264,133 @@ function ReservationPage() {
     intent.startAt,
     profileComplete,
     quoteReloadVersion,
+    resumePaymentId,
     session,
     useWalletBalance,
     validIntent,
   ]);
+
+  useEffect(() => {
+    if (!session || !resumePaymentId) return;
+    let active = true;
+    void apiRequest<CheckoutPayment>(
+      `/player/payments/${resumePaymentId}`,
+      session.access_token,
+      { cache: 'no-store' },
+    ).then((current) => {
+      if (!active) return;
+      setPayment((previous) => ({
+        ...current,
+        instructions: current.instructions ?? (previous?.payment_id === current.payment_id ? previous.instructions : null),
+      }));
+      if (current.status === 'paid' && current.reservation_id) {
+        window.sessionStorage.removeItem(PENDING_RESERVATION_KEY);
+        clearCheckoutKey();
+        setStage('success');
+      } else if (current.status === 'paid') {
+        setStage('protected');
+      } else {
+        setStage('pix');
+      }
+    }).catch((requestError) => {
+      if (!active) return;
+      if (requestError instanceof ApiRequestError && (requestError.status === 403 || requestError.status === 404)) {
+        clearCheckoutKey();
+        idempotencyKey.current = '';
+        setResumePaymentId(null);
+        setCheckoutAttemptLocked(false);
+        setError('');
+        setQuoteReloadVersion((version) => version + 1);
+        setStage('review');
+        return;
+      }
+      setError('Não foi possível consultar o pagamento. Tente novamente.');
+      setStage('failed');
+    });
+    return () => { active = false; };
+  }, [resumePaymentId, resumeVersion, session]);
+
+  useEffect(() => {
+    if (stage !== 'pix' || !paymentId || !session || paymentStatus !== 'pending') return;
+    let active = true;
+    let timer: number;
+    let attempts = 0;
+    const poll = async () => {
+      try {
+        const current = await apiRequest<CheckoutPayment>(
+          `/player/payments/${paymentId}`,
+          session.access_token,
+          { cache: 'no-store' },
+        );
+        if (!active) return;
+        setPollError('');
+        setPayment((previous) => ({
+          ...current,
+          instructions: current.instructions ?? (previous?.payment_id === current.payment_id ? previous.instructions : null),
+        }));
+        if (current.status === 'paid' && current.reservation_id) {
+          window.sessionStorage.removeItem(PENDING_RESERVATION_KEY);
+          clearCheckoutKey();
+          setStage('success');
+          return;
+        }
+        if (current.status === 'paid') {
+          setStage('protected');
+          return;
+        }
+        if (current.status !== 'pending') return;
+      } catch {
+        if (!active) return;
+        setPollError('A confirmação está demorando. Você pode consultar novamente sem gerar outra cobrança.');
+      }
+      attempts += 1;
+      if (attempts < 90 && active) timer = window.setTimeout(() => void poll(), 2000);
+      else if (active) setPollError('Consulta automática pausada. Toque em Consultar agora para verificar o Pix.');
+    };
+    timer = window.setTimeout(() => void poll(), 2000);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [paymentId, paymentStatus, pollVersion, session, stage]);
+
+  async function restartPix() {
+    if (payment?.status === 'pending' && session) {
+      try {
+        const current = await apiRequest<CheckoutPayment>(
+          `/player/payments/${payment.payment_id}`,
+          session.access_token,
+          { cache: 'no-store' },
+        );
+        setPayment((previous) => ({
+          ...current,
+          instructions: current.instructions ?? (previous?.payment_id === current.payment_id ? previous.instructions : null),
+        }));
+        if (current.status === 'paid') {
+          if (current.reservation_id) {
+            window.sessionStorage.removeItem(PENDING_RESERVATION_KEY);
+            clearCheckoutKey();
+            setStage('success');
+          } else setStage('protected');
+          return;
+        }
+        if (current.status === 'pending') {
+          setPollError('O vencimento ainda está sendo confirmado. Consulte novamente em instantes.');
+          return;
+        }
+      } catch {
+        setPollError('Não foi possível verificar o vencimento. Tente novamente.');
+        return;
+      }
+    }
+    clearCheckoutKey();
+    idempotencyKey.current = '';
+    setCheckoutAttemptLocked(false);
+    setResumePaymentId(null);
+    setPayment(null);
+    setQuote(null);
+    setError('');
+    setPollError('');
+    setStage('review');
+    setQuoteReloadVersion((version) => version + 1);
+  }
 
   function savePendingIntent() {
     window.sessionStorage.setItem(PENDING_RESERVATION_KEY, JSON.stringify(intent));
@@ -277,8 +437,7 @@ function ReservationPage() {
     );
   }
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submit() {
     if (submissionLock.current || !validIntent) return;
     if (!session) {
       trackEvent('reservation_login_required', {
@@ -302,8 +461,8 @@ function ReservationPage() {
       setError('Esta conta não pode solicitar pré-reserva.');
       return;
     }
-    if (!quote) return;
-    if (!quote.checkout_available) {
+    if (!quote && !idempotencyKey.current) return;
+    if (quote && !quote.checkout_available) {
       setError('O pagamento via PIX ainda não está disponível.');
       return;
     }
@@ -313,10 +472,11 @@ function ReservationPage() {
     setError('');
     if (!idempotencyKey.current) {
       idempotencyKey.current = `checkout_${crypto.randomUUID()}`;
-      persistCheckoutKey(intent, idempotencyKey.current, quote.use_wallet_balance);
+      persistCheckoutKey(intent, idempotencyKey.current, quote?.use_wallet_balance ?? useWalletBalance);
       setCheckoutAttemptLocked(true);
     }
-    trackEvent('checkout_started', {
+    savePendingIntent();
+    if (quote) trackEvent('checkout_started', {
       arenaId: quote.arena_id,
       courtId: quote.court_id,
       properties: {
@@ -337,13 +497,19 @@ function ReservationPage() {
           start_at: intent.startAt,
           sport: intent.sport,
           payment_method: 'provider',
-          use_wallet_balance: quote.use_wallet_balance,
-          quoted_wallet_amount: quote.wallet_amount,
-          quoted_provider_amount: quote.provider_amount,
+          use_wallet_balance: quote?.use_wallet_balance ?? useWalletBalance,
+          quoted_wallet_amount: quote?.wallet_amount,
+          quoted_provider_amount: quote?.provider_amount,
           idempotency_key: idempotencyKey.current,
         }),
       });
       setPayment(created);
+      if (created.status === 'pending' && created.provider === 'mercado_pago') {
+        persistPaymentId(created.payment_id);
+        setResumePaymentId(created.payment_id);
+        setStage('pix');
+        return;
+      }
       let confirmed = created;
       if (created.status === 'pending' && created.provider === 'sandbox') {
         await apiRequest(
@@ -352,9 +518,6 @@ function ReservationPage() {
           { method: 'POST', body: JSON.stringify({ outcome: 'paid' }) },
         );
         confirmed = await waitForConfirmation(created.payment_id, session.access_token);
-      } else if (created.status === 'pending' && created.checkout_url) {
-        window.location.assign(created.checkout_url);
-        return;
       } else if (created.status === 'pending') {
         confirmed = await waitForConfirmation(created.payment_id, session.access_token);
       }
@@ -393,6 +556,16 @@ function ReservationPage() {
   if (!validIntent) return <Unavailable onBack={() => router.push('/buscar')} />;
   if (stage === 'processing') return <Processing />;
   if (stage === 'success' && payment) return <Success intent={intent} payment={payment} />;
+  if (stage === 'protected' && payment) return <ProtectedPayment onReservations={() => router.push('/player/reservas')} />;
+  if (stage === 'pix' && payment) return (
+    <PixPayment
+      onBack={() => router.push('/player/reservas')}
+      onRefresh={() => { setPollError(''); setPollVersion((version) => version + 1); }}
+      onRestart={() => void restartPix()}
+      payment={payment}
+      pollError={pollError}
+    />
+  );
 
   return (
     <main className="min-h-[100dvh] bg-[#080D14] pb-32 text-white">
@@ -421,7 +594,7 @@ function ReservationPage() {
           <WalletBalance balance={quote?.wallet_balance} />
         </header>
         <ArenaSummary intent={intent} quote={quote} />
-        <form className="mt-3 space-y-3" onSubmit={(event) => void submit(event)}>
+        <form className="mt-3 space-y-3" onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void submit(); }}>
           {isLoading || quoteLoading ? (
             <CheckoutSkeleton />
           ) : !session ? (
@@ -458,8 +631,15 @@ function ReservationPage() {
                 <button
                   className="min-h-14 w-full rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14]"
                   onClick={() => {
-                    setStage('review');
-                    setError('');
+                    if (resumePaymentId) {
+                      setStage('processing');
+                      setResumeVersion((version) => version + 1);
+                    } else if (idempotencyKey.current) {
+                      void submit();
+                    } else {
+                      setStage('review');
+                      setError('');
+                    }
                   }}
                   type="button"
                 >
@@ -637,17 +817,17 @@ function PaymentChoice({
   disabled: boolean;
 }) {
   const walletEnabled = quote.use_wallet_balance && quote.wallet_has_balance;
-  const plan = !walletEnabled
-    ? `${formatCurrencyBRL(quote.wallet_amount)} do saldo + ${formatCurrencyBRL(quote.provider_amount)} via PIX`
-    : quote.requires_provider
+  const plan = quote.requires_provider
+    ? walletEnabled
       ? `${formatCurrencyBRL(quote.wallet_amount)} do saldo + ${formatCurrencyBRL(quote.provider_amount)} via PIX`
-      : `${formatCurrencyBRL(quote.wallet_amount)} do Saldo PlayArena`;
+      : `${formatCurrencyBRL(quote.provider_amount)} via PIX`
+    : `${formatCurrencyBRL(quote.wallet_amount)} do Saldo PlayArena`;
   return (
     <section className="rounded-[18px] border border-white/[.08] bg-[#111923] p-4">
       <p className="text-[10px] font-extrabold uppercase tracking-[.16em] text-[#9DA7B3]">
         Forma de pagamento
       </p>
-      <div className="mt-2.5 flex items-center gap-3 rounded-2xl bg-[#18212D] px-3.5 py-3">
+      {quote.requires_provider ? <div className="mt-2.5 flex items-center gap-3 rounded-2xl bg-[#18212D] px-3.5 py-3">
         <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#8FFF3C]/10 text-[#8FFF3C]">
           <PixIcon />
         </span>
@@ -658,7 +838,7 @@ function PaymentChoice({
           </span>
         </div>
         <b className="whitespace-nowrap text-sm">{formatCurrencyBRL(quote.provider_amount)}</b>
-      </div>
+      </div> : null}
       <label
         className={`mt-2.5 flex items-center gap-3 rounded-2xl border px-3.5 py-3 ${
           quote.wallet_has_balance
@@ -688,6 +868,119 @@ function PaymentChoice({
         {plan}
       </p>
     </section>
+  );
+}
+
+function PixPayment({
+  payment,
+  pollError,
+  onRefresh,
+  onRestart,
+  onBack,
+}: {
+  payment: CheckoutPayment;
+  pollError: string;
+  onRefresh: () => void;
+  onRestart: () => void;
+  onBack: () => void;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const instructions = payment.instructions;
+  const expiresAt = Date.parse(instructions?.expires_at ?? payment.expires_at);
+  const secondsLeft = Number.isFinite(expiresAt) ? Math.max(0, Math.ceil((expiresAt - now) / 1000)) : 0;
+  const expired = payment.status === 'expired' || secondsLeft === 0;
+  const unavailable = payment.status === 'failed' || payment.status === 'cancelled';
+  const copyCode = instructions?.copy_paste || instructions?.qr_code;
+  return (
+    <main className="min-h-[100dvh] bg-[#080D14] px-4 pb-[max(2rem,env(safe-area-inset-bottom))] pt-[max(1.25rem,env(safe-area-inset-top))] text-white">
+      <div className="pointer-events-none fixed inset-x-0 top-0 h-72 bg-[radial-gradient(circle_at_50%_0%,rgba(143,255,60,.13),transparent_70%)]" />
+      <div className="relative mx-auto w-full max-w-[480px]">
+        <button className="text-sm font-bold text-[#9DA7B3]" onClick={onBack} type="button">‹ Minhas reservas</button>
+        <div className="mt-7 flex items-center gap-3">
+          <span className="grid h-11 w-11 place-items-center rounded-2xl border border-[#8FFF3C]/25 bg-[#8FFF3C]/10 text-[#8FFF3C]"><PixIcon /></span>
+          <div>
+            <p className="text-[10px] font-extrabold uppercase tracking-[.16em] text-[#8FFF3C]">Pagamento seguro</p>
+            <h1 className="text-[26px] font-black tracking-[-.05em]">Pague com Pix</h1>
+          </div>
+        </div>
+        <p className="mt-3 text-sm leading-relaxed text-[#9DA7B3]">
+          Escaneie o QR Code ou copie o código abaixo no app do seu banco. Sua pré-reserva será enviada após a confirmação do pagamento.
+        </p>
+        <div className="mt-5 rounded-[24px] border border-white/[.09] bg-[#111923] p-4 sm:p-5">
+          <div className="flex items-start justify-between gap-3 border-b border-white/[.08] pb-4">
+            <div className="min-w-0">
+              <p className="text-[10px] font-extrabold uppercase tracking-[.13em] text-[#9DA7B3]">Arena</p>
+              <p className="mt-1 truncate text-sm font-bold">{payment.arena_name} · {payment.court_name}</p>
+            </div>
+            <p className="shrink-0 text-xl font-black text-[#8FFF3C]">{formatCurrencyBRL(payment.provider_amount)}</p>
+          </div>
+          {expired || unavailable ? (
+            <div className="py-10 text-center">
+              <h2 className="text-xl font-black">{expired ? 'Este Pix expirou' : 'Pagamento não concluído'}</h2>
+              <p className="mt-2 text-sm text-[#9DA7B3]">Gere uma nova cobrança para tentar novamente. Não pague o código anterior.</p>
+              <button className="mt-6 min-h-12 w-full rounded-2xl bg-[#8FFF3C] px-4 font-black text-[#080D14]" onClick={onRestart} type="button">Gerar novo Pix</button>
+            </div>
+          ) : (
+            <>
+              <div className={`mx-auto mt-5 grid min-h-[234px] w-[234px] max-w-full place-items-center rounded-[20px] p-3 ${instructions?.qr_code_base64 ? 'bg-white' : 'border border-white/[.08] bg-[#18212D]'}`}>
+                {instructions?.qr_code_base64 ? (
+                  <Image alt="QR Code Pix para pagamento da reserva" className="h-full w-full object-contain" height={210} src={`data:image/png;base64,${instructions.qr_code_base64}`} unoptimized width={210} />
+                ) : <span className="text-center text-xs font-semibold text-[#C3CDD7]">{instructions ? 'QR Code indisponível. Use o Pix copia e cola abaixo.' : 'Gerando seu Pix...'}</span>}
+              </div>
+              <p className="mt-4 text-center text-xs font-bold text-[#C3CDD7]">
+                {secondsLeft > 0 ? `Pix válido por ${String(Math.floor(secondsLeft / 60)).padStart(2, '0')}:${String(secondsLeft % 60).padStart(2, '0')}` : 'Consultando validade do Pix...'}
+              </p>
+              <p className="mt-5 text-[10px] font-extrabold uppercase tracking-[.13em] text-[#9DA7B3]">Pix copia e cola</p>
+              <div className="mt-2 rounded-xl border border-white/[.08] bg-[#080D14] px-3 py-3 text-xs leading-relaxed text-[#C3CDD7] break-all">
+                {copyCode || 'Aguardando o código de pagamento...'}
+              </div>
+              <button
+                className="mt-3 min-h-12 w-full rounded-2xl bg-[#8FFF3C] px-4 font-black text-[#080D14] disabled:opacity-50"
+                disabled={!copyCode}
+                onClick={() => {
+                  if (!copyCode) return;
+                  void navigator.clipboard.writeText(copyCode).then(() => setCopied(true)).catch(() => setCopied(false));
+                }}
+                type="button"
+              >
+                {copied ? 'Código copiado' : 'Copiar código Pix'}
+              </button>
+            </>
+          )}
+        </div>
+        {!expired && !unavailable ? (
+          <div aria-live="polite" className="mt-4 flex items-center gap-3 rounded-2xl border border-white/[.08] bg-[#111923] px-4 py-3">
+            <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-[#8FFF3C]" />
+            <p className="text-xs font-semibold text-[#C3CDD7]">Aguardando confirmação do pagamento...</p>
+          </div>
+        ) : null}
+        {pollError ? (
+          <div className="mt-3 rounded-2xl border border-white/[.08] bg-[#111923] p-4 text-xs text-[#C3CDD7]">
+            <p>{pollError}</p>
+            <button className="mt-2 font-bold text-[#8FFF3C]" onClick={onRefresh} type="button">Consultar agora</button>
+          </div>
+        ) : null}
+        <p className="mt-5 text-center text-xs leading-relaxed text-[#7F8A97]">Você pode manter esta tela aberta. Também verificaremos o pagamento quando voltar.</p>
+      </div>
+    </main>
+  );
+}
+
+function ProtectedPayment({ onReservations }: { onReservations: () => void }) {
+  return (
+    <main className="grid min-h-[100dvh] place-items-center bg-[#080D14] px-5 text-white">
+      <section className="w-full max-w-md rounded-[24px] border border-[#8FFF3C]/20 bg-[#111923] p-6 text-center">
+        <span className="mx-auto grid h-14 w-14 place-items-center rounded-full bg-[#8FFF3C]/10 text-[#8FFF3C]"><ShieldIcon /></span>
+        <h1 className="mt-5 text-2xl font-black">Pagamento protegido</h1>
+        <p className="mt-3 text-sm leading-relaxed text-[#9DA7B3]">O Pix foi recebido, mas não foi possível concluir a pré-reserva. O valor pago foi creditado no seu Saldo PlayArena. Consulte suas reservas ou entre em contato com o suporte.</p>
+        <button className="mt-6 min-h-12 w-full rounded-2xl bg-[#8FFF3C] font-black text-[#080D14]" onClick={onReservations} type="button">Minhas reservas</button>
+      </section>
+    </main>
   );
 }
 

@@ -16,7 +16,6 @@ from app.repositories.payment_repository import (
     WalletInsufficientBalanceError,
     get_admin_payments,
     get_checkout_quote,
-    get_player_payment,
     get_wallet,
 )
 from app.schemas.auth import AuthenticatedUser
@@ -27,6 +26,7 @@ from app.services.payments.service import (
     PaymentWebhookError,
     complete_sandbox_payment,
     create_checkout,
+    get_player_payment_status,
     process_webhook,
     reconcile_mercado_pago_payment,
 )
@@ -102,7 +102,7 @@ def checkout_quote(
             "provider_available": provider_available,
             "checkout_available": not quote["requires_provider"] or provider_available,
             "payment_provider": settings.payment_provider if provider_available else None,
-            "hold_minutes": settings.payment_hold_minutes,
+            "hold_minutes": settings.effective_payment_hold_minutes,
         }
     except (CheckoutNotFoundError, CheckoutSlotUnavailableError, CheckoutConfigurationError, ValueError) as exc:
         raise _checkout_error(exc) from exc
@@ -130,11 +130,18 @@ def post_checkout(
 
 
 @router.get("/player/payments/{payment_id}")
-def payment_status(payment_id: UUID, current_user: AuthenticatedUser = Depends(require_player)) -> dict:
+def payment_status(
+    payment_id: UUID,
+    request: Request,
+    current_user: AuthenticatedUser = Depends(require_player),
+) -> dict:
+    enforce_rate_limit(request, scope="payment-status", principal=f"user:{current_user.id}", limit=60)
     try:
-        return get_player_payment(current_user.id, payment_id)
+        return get_player_payment_status(current_user.id, payment_id)
     except PaymentOwnershipError as exc:
         raise HTTPException(status_code=404, detail="Payment not found.") from exc
+    except PaymentConfigurationError as exc:
+        raise _checkout_error(exc) from exc
 
 
 @router.post("/player/payments/{payment_id}/sandbox-complete")

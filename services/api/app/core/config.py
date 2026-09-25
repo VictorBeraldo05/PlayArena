@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     payment_webhook_secret: str | None = Field(default=None, alias="PAYMENT_WEBHOOK_SECRET")
     mercado_pago_access_token: str | None = Field(default=None, alias="MERCADO_PAGO_ACCESS_TOKEN")
     mercado_pago_webhook_secret: str | None = Field(default=None, alias="MERCADO_PAGO_WEBHOOK_SECRET")
-    mercado_pago_return_url: str | None = Field(default=None, alias="MERCADO_PAGO_RETURN_URL")
+    mercado_pago_test_seller_id: str | None = Field(default=None, alias="MERCADO_PAGO_TEST_SELLER_ID")
     mercado_pago_http_timeout_seconds: PositiveInt = Field(default=5, alias="MERCADO_PAGO_HTTP_TIMEOUT_SECONDS")
 
     model_config = SettingsConfigDict(
@@ -102,8 +102,8 @@ class Settings(BaseSettings):
         return self.payment_provider != "disabled" and self.payment_sandbox_enabled
 
     @property
-    def mercado_pago_effective_return_url(self) -> str:
-        return self.mercado_pago_return_url or f"{self.frontend_url.rstrip('/')}/pagamento/retorno"
+    def effective_payment_hold_minutes(self) -> int:
+        return max(self.payment_hold_minutes, 31) if self.payment_provider == "mercado_pago" else self.payment_hold_minutes
 
     @model_validator(mode="after")
     def validate_payment_configuration(self) -> "Settings":
@@ -118,13 +118,10 @@ class Settings(BaseSettings):
         if self.payment_provider == "sandbox" and not self.payment_webhook_secret:
             raise ValueError("PAYMENT_WEBHOOK_SECRET is required for the sandbox provider.")
         if self.payment_provider == "mercado_pago":
-            if not self.mercado_pago_access_token or not self.mercado_pago_webhook_secret:
+            if not self.mercado_pago_access_token or not self.mercado_pago_webhook_secret or not self.mercado_pago_test_seller_id:
                 raise ValueError(
-                    "MERCADO_PAGO_ACCESS_TOKEN and MERCADO_PAGO_WEBHOOK_SECRET are required."
+                    "MERCADO_PAGO_ACCESS_TOKEN, MERCADO_PAGO_WEBHOOK_SECRET and MERCADO_PAGO_TEST_SELLER_ID are required."
                 )
-            return_url = urlparse(self.mercado_pago_effective_return_url)
-            if return_url.scheme != "https" or not return_url.netloc:
-                raise ValueError("Mercado Pago requires an absolute HTTPS return URL.")
         return self
 
 
