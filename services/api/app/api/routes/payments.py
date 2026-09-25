@@ -177,13 +177,15 @@ async def sandbox_payment_webhook(
 @webhook_router.post("/mercado-pago", status_code=status.HTTP_200_OK)
 async def mercado_pago_payment_webhook(
     request: Request,
-    data_id: str = Query(alias="data.id", min_length=1, max_length=120),
     topic: str = Query(alias="type", min_length=1, max_length=40),
     x_signature: str | None = Header(default=None),
     x_request_id: str | None = Header(default=None),
 ) -> dict:
     enforce_rate_limit(request, scope="payment-webhook", limit=settings.payment_webhook_rate_limit_per_minute)
     payload = await request.body()
+    data_id = request.query_params.get("data.id")
+    if not data_id or len(data_id) > 120:
+        raise HTTPException(status_code=401, detail="Invalid payment webhook.")
     try:
         return process_webhook(
             "mercado_pago",

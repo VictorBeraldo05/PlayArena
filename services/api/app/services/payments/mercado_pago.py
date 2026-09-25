@@ -167,16 +167,29 @@ class MercadoPagoProvider:
         data_id: str | None = None,
         topic: str | None = None,
     ) -> ProviderWebhookEvent:
-        if not signature or not request_id or not data_id:
-            raise PaymentProviderError("Mercado Pago webhook metadata is incomplete.")
-        if topic != "order":
-            raise PaymentProviderError("Unsupported Mercado Pago webhook topic.")
-        self._verify_signature(signature, request_id, data_id)
         try:
             body = json.loads(payload)
             if not isinstance(body, dict):
                 raise ValueError("body")
-            event_id = str(body["id"])
+        except (TypeError, ValueError) as exc:
+            raise PaymentProviderError("Invalid Mercado Pago webhook payload.") from exc
+        normalized_data_id = data_id.lower() if data_id else None
+        live_mode = body.get("live_mode")
+        logger.info(
+            "mercado_pago.webhook.signature_check query_data_id=%r normalized_data_id=%r "
+            "x_request_id_present=%s x_signature_present=%s payment_env=test live_mode=%s",
+            data_id,
+            normalized_data_id,
+            str(bool(request_id)).lower(),
+            str(bool(signature)).lower(),
+            "true" if live_mode is True else "false" if live_mode is False else "unknown",
+        )
+        if not signature or not request_id or not data_id:
+            raise PaymentProviderError("Mercado Pago webhook metadata is incomplete.")
+        if topic != "order":
+            raise PaymentProviderError("Unsupported Mercado Pago webhook topic.")
+        self._verify_signature(signature, request_id, data_id.lower())
+        try:
             body_data = body["data"]
             if not isinstance(body_data, dict) or str(body_data["id"]) != data_id:
                 raise ValueError("data.id")
@@ -192,6 +205,9 @@ class MercadoPagoProvider:
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise PaymentProviderError("Invalid Mercado Pago webhook payload.") from exc
 
+        event_id = str(body.get("id") or "order:" + hashlib.sha256(
+            json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest())
         state = self.get_payment(data_id)
         return ProviderWebhookEvent(
             event_id=event_id,
@@ -207,15 +223,19 @@ class MercadoPagoProvider:
         parts: dict[str, str] = {}
         for raw_part in signature.split(","):
             key, separator, value = raw_part.strip().partition("=")
-            if separator and key and value:
-                parts[key] = value
+            if not separator or not key or not value or key in parts:
+                logger.warning("signature_mismatch")
+                raise PaymentProviderError("Invalid Mercado Pago webhook signature.")
+            parts[key] = value.strip()
         timestamp = parts.get("ts")
         supplied = parts.get("v1")
-        if not timestamp or not supplied or len(supplied) != 64:
+        if not timestamp or not timestamp.isdecimal() or not supplied or len(supplied) != 64:
+            logger.warning("signature_mismatch")
             raise PaymentProviderError("Invalid Mercado Pago webhook signature.")
         manifest = f"id:{data_id};request-id:{request_id};ts:{timestamp};"
         expected = hmac.new(self._webhook_secret, manifest.encode("utf-8"), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(expected, supplied):
+            logger.warning("signature_mismatch")
             raise PaymentProviderError("Invalid Mercado Pago webhook signature.")
 
     def _request_json(

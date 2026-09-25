@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -13,6 +14,7 @@ from app.api.routes import payments as payment_routes
 from app.core.config import Settings
 from app.services.payments.mercado_pago import MercadoPagoProvider
 from app.services.payments.providers import PaymentProviderError
+from app.services.payments import service as payment_service
 
 PAYMENT_ID = "60000000-0000-0000-0000-000000000001"
 ORDER_ID = "ORD01PLAYARENA00000000000001"
@@ -67,22 +69,28 @@ def provider(handler) -> MercadoPagoProvider:
     )
 
 
-def signed_webhook(*, live_mode: bool = False, signature_override: str | None = None):
+def signed_webhook(
+    *,
+    live_mode: bool = False,
+    signature_override: str | None = None,
+    include_event_id: bool = True,
+    body_data_id: str = ORDER_ID,
+    secret: str = WEBHOOK_SECRET,
+):
     request_id = "request-123"
     timestamp = "1760000000000"
-    body = json.dumps(
-        {
-            "id": "notification-123",
-            "type": "order",
-            "action": "order.processed",
-            "live_mode": live_mode,
-            "user_id": 123456,
-            "data": {"id": ORDER_ID},
-        },
-        separators=(",", ":"),
-    ).encode()
-    manifest = f"id:{ORDER_ID};request-id:{request_id};ts:{timestamp};"
-    digest = hmac.new(WEBHOOK_SECRET.encode(), manifest.encode(), hashlib.sha256).hexdigest()
+    event = {
+        "type": "order",
+        "action": "order.action_required",
+        "live_mode": live_mode,
+        "user_id": 123456,
+        "data": {"id": body_data_id, "status": "action_required", "status_detail": "waiting_transfer"},
+    }
+    if include_event_id:
+        event["id"] = "notification-123"
+    body = json.dumps(event, separators=(",", ":")).encode()
+    manifest = f"id:{ORDER_ID.lower()};request-id:{request_id};ts:{timestamp};"
+    digest = hmac.new(secret.encode(), manifest.encode(), hashlib.sha256).hexdigest()
     return body, signature_override or f"ts={timestamp},v1={digest}", request_id
 
 
@@ -357,6 +365,121 @@ def test_public_webhook_route_forwards_official_metadata(
             "topic": "order",
         },
     }
+
+
+def test_real_order_webhook_without_notification_id_is_pending(
+    create_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="app.services.payments.mercado_pago")
+    calls = []
+    events = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json=order_payload())
+
+    monkeypatch.setattr(payment_routes, "enforce_rate_limit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(payment_service, "_configured_provider", lambda: provider(handler))
+
+    def fake_process_provider_event(provider_name, event, payload):
+        events.append((provider_name, event, payload))
+        return {"result": "processed", "status": event.status}
+
+    monkeypatch.setattr(payment_service, "process_provider_event", fake_process_provider_event)
+    body, signature, request_id = signed_webhook(include_event_id=False)
+    response = create_client.post(
+        f"/payments/webhooks/mercado-pago?data.id={ORDER_ID}&type=order",
+        headers={"x-signature": signature, "x-request-id": request_id},
+        content=body,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"result": "processed", "status": "pending"}
+    assert calls == [f"/v1/orders/{ORDER_ID}"]
+    assert events[0][0] == "mercado_pago"
+    assert events[0][1].status == "pending"
+    assert events[0][1].event_id.startswith("order:")
+    assert events[0][2] == body
+    assert "mercado_pago.webhook.signature_check" in caplog.text
+    assert f"normalized_data_id='{ORDER_ID.lower()}'" in caplog.text
+    assert "payment_env=test live_mode=false" in caplog.text
+    assert WEBHOOK_SECRET not in caplog.text
+
+
+def test_real_order_webhook_event_id_is_stable_without_top_level_id() -> None:
+    body, signature, request_id = signed_webhook(include_event_id=False)
+    adapter = provider(lambda _request: httpx.Response(200, json=order_payload()))
+
+    first = adapter.verify_webhook(body, signature, request_id=request_id, data_id=ORDER_ID, topic="order")
+    second = adapter.verify_webhook(body, signature, request_id=request_id, data_id=ORDER_ID, topic="order")
+
+    assert first.event_id == second.event_id
+
+
+@pytest.mark.parametrize(
+    ("query_id", "headers", "secret", "expected_status"),
+    [
+        (None, {"x-signature", "x-request-id"}, WEBHOOK_SECRET, 401),
+        (ORDER_ID, {"x-signature", "x-request-id"}, "wrong-secret", 401),
+        (ORDER_ID, {"x-signature"}, WEBHOOK_SECRET, 401),
+        (ORDER_ID, {"x-request-id"}, WEBHOOK_SECRET, 401),
+    ],
+)
+def test_real_order_webhook_rejects_missing_query_or_invalid_headers(
+    create_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    query_id: str | None,
+    headers: set[str],
+    secret: str,
+    expected_status: int,
+) -> None:
+    monkeypatch.setattr(payment_routes, "enforce_rate_limit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        payment_service,
+        "_configured_provider",
+        lambda: provider(lambda _request: pytest.fail("GET must not run")),
+    )
+    body, signature, request_id = signed_webhook(include_event_id=False, secret=secret)
+    request_headers = {}
+    if "x-signature" in headers:
+        request_headers["x-signature"] = signature
+    if "x-request-id" in headers:
+        request_headers["x-request-id"] = request_id
+    query = f"data.id={query_id}&type=order" if query_id else "type=order"
+
+    response = create_client.post(
+        f"/payments/webhooks/mercado-pago?{query}", headers=request_headers, content=body,
+    )
+
+    assert response.status_code == expected_status
+
+
+@pytest.mark.parametrize("signature", ["v1=" + "0" * 64, "ts=1760000000000", "ts=1,v1=bad"])
+def test_webhook_rejects_incomplete_signature_fields(signature: str) -> None:
+    body, _, request_id = signed_webhook()
+    with pytest.raises(PaymentProviderError, match="signature"):
+        provider(lambda _request: pytest.fail("GET must not run")).verify_webhook(
+            body, signature, request_id=request_id, data_id=ORDER_ID, topic="order",
+        )
+
+
+def test_webhook_accepts_reordered_signature_fields() -> None:
+    body, signature, request_id = signed_webhook()
+    event = provider(lambda _request: httpx.Response(200, json=order_payload())).verify_webhook(
+        body, ",".join(reversed(signature.split(","))),
+        request_id=request_id, data_id=ORDER_ID, topic="order",
+    )
+    assert event.status == "pending"
+
+
+def test_webhook_signature_uses_query_id_not_body_id() -> None:
+    body, signature, request_id = signed_webhook(body_data_id="DIFFERENT")
+    with pytest.raises(PaymentProviderError, match="payload"):
+        provider(lambda _request: pytest.fail("GET must not run")).verify_webhook(
+            body, signature, request_id=request_id, data_id=ORDER_ID, topic="order",
+        )
 
 
 def test_create_order_timeout_retries_once_with_the_same_idempotency_key() -> None:
