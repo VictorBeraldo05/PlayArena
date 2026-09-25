@@ -12,15 +12,12 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from mercadopago.webhook import InvalidWebhookSignatureError, WebhookSignatureValidator
 from pydantic import ValidationError
 
 from app.api.routes import payments as payment_routes
 from app.core.config import Settings
-from app.services.payments.mercado_pago import (
-    MercadoPagoProvider,
-    build_webhook_manifest,
-    parse_webhook_signature,
-)
+from app.services.payments.mercado_pago import MercadoPagoProvider
 from app.services.payments.providers import PaymentProviderError
 from app.services.payments import service as payment_service
 
@@ -97,7 +94,7 @@ def signed_webhook(
     if include_event_id:
         event["id"] = "notification-123"
     body = json.dumps(event, separators=(",", ":")).encode()
-    manifest = f"id:{ORDER_ID.lower()};request-id:{request_id};ts:{timestamp};"
+    manifest = f"id:{ORDER_ID};request-id:{request_id};ts:{timestamp};"
     digest = hmac.new(secret.encode(), manifest.encode(), hashlib.sha256).hexdigest()
     return body, signature_override or f"ts={timestamp},v1={digest}", request_id
 
@@ -230,7 +227,7 @@ def test_invalid_webhook_signature_is_rejected_before_get_order() -> None:
             data_id=ORDER_ID,
             topic="order",
         )
-    assert error.value.code == "signature_mismatch"
+    assert error.value.code == "webhook_signature_invalid"
 
 
 def test_production_webhook_is_explicitly_blocked() -> None:
@@ -355,10 +352,12 @@ def test_public_webhook_route_forwards_official_metadata(
 
     monkeypatch.setattr(payment_routes, "enforce_rate_limit", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(payment_routes, "process_webhook", fake_process_webhook)
+    monkeypatch.setattr(payment_routes.settings, "mercado_pago_webhook_secret", WEBHOOK_SECRET)
+    _body, signature, request_id = signed_webhook()
 
     response = create_client.post(
         f"/payments/webhooks/mercado-pago?data.id={ORDER_ID}&type=order",
-        headers={"x-signature": "ts=1,v1=signature", "x-request-id": "request-123"},
+        headers={"x-signature": signature, "x-request-id": request_id},
         content=b'{"type":"order"}',
     )
 
@@ -367,7 +366,7 @@ def test_public_webhook_route_forwards_official_metadata(
     assert captured == {
         "provider_name": "mercado_pago",
         "payload": b'{"type":"order"}',
-        "signature": "ts=1,v1=signature",
+        "signature": signature,
         "metadata": {
             "request_id": "request-123",
             "data_id": ORDER_ID,
@@ -379,9 +378,7 @@ def test_public_webhook_route_forwards_official_metadata(
 def test_real_order_webhook_without_notification_id_is_pending(
     create_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.INFO, logger="app.services.payments.mercado_pago")
     calls = []
     events = []
 
@@ -390,6 +387,7 @@ def test_real_order_webhook_without_notification_id_is_pending(
         return httpx.Response(200, json=order_payload())
 
     monkeypatch.setattr(payment_routes, "enforce_rate_limit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(payment_routes.settings, "mercado_pago_webhook_secret", WEBHOOK_SECRET)
     monkeypatch.setattr(payment_service, "_configured_provider", lambda: provider(handler))
 
     def fake_process_provider_event(provider_name, event, payload):
@@ -411,13 +409,6 @@ def test_real_order_webhook_without_notification_id_is_pending(
     assert events[0][1].status == "pending"
     assert events[0][1].event_id.startswith("order:")
     assert events[0][2] == body
-    assert "mercado_pago.webhook.signature_check" in caplog.text
-    assert f"normalized_data_id='{ORDER_ID.lower()}'" in caplog.text
-    assert "payment_env=test webhook_secret_configured=true" in caplog.text
-    assert "signature_valid live_mode=false seller_id_matches=true" in caplog.text
-    assert f"manifest='id:{ORDER_ID.lower()};request-id:{request_id};ts:1760000000000;'" in caplog.text
-    assert signature.split("v1=")[1] not in caplog.text
-    assert WEBHOOK_SECRET not in caplog.text
 
 
 def test_real_order_webhook_event_id_is_stable_without_top_level_id() -> None:
@@ -450,6 +441,7 @@ def test_real_order_webhook_rejects_missing_query_or_invalid_headers(
 ) -> None:
     caplog.set_level(logging.WARNING)
     monkeypatch.setattr(payment_routes, "enforce_rate_limit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(payment_routes.settings, "mercado_pago_webhook_secret", WEBHOOK_SECRET)
     monkeypatch.setattr(
         payment_service,
         "_configured_provider",
@@ -468,33 +460,22 @@ def test_real_order_webhook_rejects_missing_query_or_invalid_headers(
     )
 
     assert response.status_code == expected_status
-    expected_reason = (
-        "missing_data_id" if query_id is None else
-        "missing_signature" if "x-signature" not in headers else
-        "missing_request_id" if "x-request-id" not in headers else
-        "signature_mismatch"
-    )
-    assert f"reason={expected_reason}" in caplog.text
+    assert caplog.text.count("webhook_signature_invalid") == 1
     assert WEBHOOK_SECRET not in caplog.text
     assert signature.split("v1=")[1] not in caplog.text
 
 
 @pytest.mark.parametrize(
-    ("signature", "reason"),
-    [
-        ("v1=" + "0" * 64, "missing_ts"),
-        ("ts=1760000000000", "missing_v1"),
-        ("ts=1,v1=bad", "signature_mismatch"),
-        ("ts=1,v1=" + "é" * 64, "signature_mismatch"),
-    ],
+    "signature",
+    ["v1=" + "0" * 64, "ts=1760000000000", "ts=1,v1=bad", "ts=1,v1=" + "é" * 64],
 )
-def test_webhook_rejects_incomplete_signature_fields(signature: str, reason: str) -> None:
+def test_webhook_rejects_incomplete_signature_fields(signature: str) -> None:
     body, _, request_id = signed_webhook()
     with pytest.raises(PaymentProviderError) as error:
         provider(lambda _request: pytest.fail("GET must not run")).verify_webhook(
             body, signature, request_id=request_id, data_id=ORDER_ID, topic="order",
         )
-    assert error.value.code == reason
+    assert error.value.code == "webhook_signature_invalid"
 
 
 def test_webhook_accepts_reordered_signature_fields() -> None:
@@ -506,14 +487,14 @@ def test_webhook_accepts_reordered_signature_fields() -> None:
     assert event.status == "pending"
 
 
-def test_signature_parser_trims_fields_without_changing_v1() -> None:
+def test_sdk_preserves_uppercase_data_id_in_signature() -> None:
     body, signature, request_id = signed_webhook()
-    timestamp, v1 = parse_webhook_signature(signature)
-    assert timestamp == "1760000000000"
-    assert v1 == signature.split("v1=")[1]
-    assert build_webhook_manifest(ORDER_ID, request_id, timestamp) == (
-        f"id:{ORDER_ID.lower()};request-id:{request_id};ts:1760000000000;"
-    )
+    timestamp = "1760000000000"
+    legacy_manifest = f"id:{ORDER_ID.lower()};request-id:{request_id};ts:{timestamp};"
+    legacy_hash = hmac.new(WEBHOOK_SECRET.encode(), legacy_manifest.encode(), hashlib.sha256).hexdigest()
+    with pytest.raises(InvalidWebhookSignatureError):
+        WebhookSignatureValidator.validate(f"ts={timestamp},v1={legacy_hash}", request_id, ORDER_ID, WEBHOOK_SECRET)
+    v1 = signature.split("v1=")[1]
     padded_signature = f" v1 = {v1} , ts = {timestamp} "
     event = provider(lambda _request: httpx.Response(200, json=order_payload())).verify_webhook(
         body, padded_signature, request_id=request_id, data_id=ORDER_ID, topic="order",
@@ -534,19 +515,17 @@ def test_webhook_route_reads_dotted_query_and_case_insensitive_headers(
         return {"result": "processed"}
 
     monkeypatch.setattr(payment_routes, "enforce_rate_limit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(payment_routes.settings, "mercado_pago_webhook_secret", WEBHOOK_SECRET)
     monkeypatch.setattr(payment_routes, "process_webhook", fake_process_webhook)
+    _body, signature, _request_id = signed_webhook()
     response = create_client.post(
         f"/payments/webhooks/mercado-pago?data.id={ORDER_ID}&type=order",
-        headers={"X-SIGNATURE": "ts=1,v1=not-logged", "X-REQUEST-ID": "Real-Request-123"},
+        headers={"X-SIGNATURE": signature, "X-REQUEST-ID": "request-123"},
         content=b"{}",
     )
     assert response.status_code == 200
-    assert captured == {"request_id": "Real-Request-123", "data_id": ORDER_ID, "topic": "order"}
-    assert "path='/payments/webhooks/mercado-pago'" in caplog.text
-    assert f"query_data_id='{ORDER_ID}'" in caplog.text
-    assert "query_type='order'" in caplog.text
-    assert "x_request_id='Real-Request-123'" in caplog.text
-    assert "not-logged" not in caplog.text
+    assert captured == {"request_id": "request-123", "data_id": ORDER_ID, "topic": "order"}
+    assert "webhook_signature_invalid" not in caplog.text
 
 
 def test_local_signature_diagnostic_uses_environment_only() -> None:
@@ -563,14 +542,13 @@ def test_local_signature_diagnostic_uses_environment_only() -> None:
     result = subprocess.run([sys.executable, str(script)], env=environment, capture_output=True, text=True, check=False)
     assert result.returncode == 0
     assert "result=signature_valid" in result.stdout
-    assert f"manifest='id:{ORDER_ID.lower()};request-id:{request_id};ts:1760000000000;'" in result.stdout
     assert WEBHOOK_SECRET not in result.stdout + result.stderr
     assert signature.split("v1=")[1] not in result.stdout + result.stderr
 
     environment["MERCADO_PAGO_WEBHOOK_SECRET"] = "different-secret"
     mismatch = subprocess.run([sys.executable, str(script)], env=environment, capture_output=True, text=True, check=False)
     assert mismatch.returncode == 1
-    assert "result=signature_mismatch" in mismatch.stdout
+    assert "result=webhook_signature_invalid" in mismatch.stdout
     assert "different-secret" not in mismatch.stdout + mismatch.stderr
 
 

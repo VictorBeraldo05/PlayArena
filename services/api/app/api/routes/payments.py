@@ -3,6 +3,7 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from mercadopago.webhook import InvalidWebhookSignatureError, WebhookSignatureValidator
 
 from app.core.config import settings
 from app.core.rate_limit import enforce_rate_limit
@@ -180,28 +181,27 @@ async def sandbox_payment_webhook(
 async def mercado_pago_payment_webhook(
     request: Request,
     topic: str = Query(alias="type", min_length=1, max_length=40),
-    x_signature: str | None = Header(default=None),
-    x_request_id: str | None = Header(default=None),
 ) -> dict:
     enforce_rate_limit(request, scope="payment-webhook", limit=settings.payment_webhook_rate_limit_per_minute)
     payload = await request.body()
     data_id = request.query_params.get("data.id")
-    if settings.payment_environment == "test":
-        logger.warning(
-            "mercado_pago.webhook.request path=%r query_keys=%r query_data_id=%r query_type=%r "
-            "x_request_id=%r x_signature_present=%s webhook_secret_configured=%s",
-            request.url.path,
-            list(request.query_params.keys()),
-            data_id,
-            topic,
-            x_request_id,
-            str(bool(x_signature)).lower(),
-            str(bool(settings.mercado_pago_webhook_secret)).lower(),
-        )
-    if not data_id or len(data_id) > 120:
-        if settings.payment_environment == "test":
-            logger.warning("mercado_pago.webhook.rejected reason=missing_data_id")
+    x_signature = request.headers.get("x-signature")
+    x_request_id = request.headers.get("x-request-id")
+    if not data_id or len(data_id) > 120 or not x_request_id or not x_signature:
+        logger.warning("webhook_signature_invalid")
         raise HTTPException(status_code=401, detail="Invalid payment webhook.")
+    if not settings.mercado_pago_webhook_secret:
+        raise HTTPException(status_code=503, detail="Invalid payment webhook.")
+    try:
+        WebhookSignatureValidator.validate(
+            request.headers.get("x-signature"),
+            request.headers.get("x-request-id"),
+            request.query_params.get("data.id"),
+            settings.mercado_pago_webhook_secret,
+        )
+    except (InvalidWebhookSignatureError, TypeError) as exc:
+        logger.warning("webhook_signature_invalid")
+        raise HTTPException(status_code=401, detail="Invalid payment webhook.") from exc
     try:
         return process_webhook(
             "mercado_pago",

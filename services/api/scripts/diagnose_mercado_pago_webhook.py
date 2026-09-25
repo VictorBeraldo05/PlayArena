@@ -3,20 +3,10 @@
 from __future__ import annotations
 
 import os
-import sys
-from pathlib import Path
 from urllib.parse import urlsplit
 
+from mercadopago.webhook import InvalidWebhookSignatureError, WebhookSignatureValidator
 from starlette.datastructures import QueryParams
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from app.services.payments.mercado_pago import (  # noqa: E402
-    MercadoPagoProvider,
-    build_webhook_manifest,
-    parse_webhook_signature,
-)
-from app.services.payments.providers import PaymentProviderError  # noqa: E402
 
 
 def main() -> int:
@@ -32,7 +22,6 @@ def main() -> int:
     secret = os.getenv("MERCADO_PAGO_WEBHOOK_SECRET")
 
     print(f"query_data_id={data_id!r}")
-    print(f"normalized_data_id={data_id.lower() if data_id else None!r}")
     print(f"x_request_id={request_id!r}")
     print(f"x_signature_present={str(bool(signature)).lower()}")
     print(f"webhook_secret_configured={str(bool(secret)).lower()}")
@@ -50,19 +39,9 @@ def main() -> int:
         return 2
 
     try:
-        timestamp, v1 = parse_webhook_signature(signature)
-        print(f"x_signature_ts={timestamp!r}")
-        print(f"x_signature_v1_present={str(bool(v1)).lower()}")
-        if timestamp:
-            print(f"manifest={build_webhook_manifest(data_id, request_id, timestamp)!r}")
-        adapter = MercadoPagoProvider(
-            access_token="local-diagnostic-only",
-            webhook_secret=secret,
-            test_seller_id="local-diagnostic-only",
-        )
-        adapter._verify_signature(signature, request_id, data_id)
-    except PaymentProviderError as exc:
-        print(f"result={exc.code}")
+        WebhookSignatureValidator.validate(signature, request_id, data_id, secret)
+    except (InvalidWebhookSignatureError, TypeError):
+        print("result=webhook_signature_invalid")
         return 1
     print("result=signature_valid")
     return 0

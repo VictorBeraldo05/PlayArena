@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import logging
 import time
 from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, NoReturn
+from typing import Any
 
 import httpx
+from mercadopago.webhook import InvalidWebhookSignatureError, WebhookSignatureValidator
 
 from app.services.payments.providers import (
     PaymentInstructions,
@@ -25,27 +25,6 @@ logger = logging.getLogger(__name__)
 MERCADO_PAGO_API_URL = "https://api.mercadopago.com"
 TRANSIENT_STATUS_CODES = {408, 423, 429, 500, 502, 503, 504}
 PIX_EXPIRATION = "PT30M"
-
-
-def build_webhook_manifest(data_id: str, request_id: str, timestamp: str) -> str:
-    return f"id:{data_id.lower()};request-id:{request_id};ts:{timestamp};"
-
-
-def parse_webhook_signature(signature: str) -> tuple[str | None, str | None]:
-    parts: dict[str, str] = {}
-    for raw_part in signature.split(","):
-        key, separator, value = raw_part.partition("=")
-        key, value = key.strip(), value.strip()
-        if not separator or not key or key in parts:
-            _reject_webhook("signature_mismatch")
-        if key in {"ts", "v1"}:
-            parts[key] = value
-    return parts.get("ts"), parts.get("v1")
-
-
-def _reject_webhook(reason: str) -> NoReturn:
-    logger.warning("mercado_pago.webhook.rejected reason=%s", reason)
-    raise PaymentProviderError("Invalid Mercado Pago webhook.", code=reason)
 
 
 class MercadoPagoProvider:
@@ -70,7 +49,7 @@ class MercadoPagoProvider:
         if not test_seller_id:
             raise PaymentProviderError("Mercado Pago test seller id is not configured.")
         self._access_token = access_token
-        self._webhook_secret = webhook_secret.encode("utf-8")
+        self._webhook_secret = webhook_secret
         self._test_seller_id = test_seller_id
         self._timeout = httpx.Timeout(timeout_seconds)
         self._transport = transport
@@ -188,27 +167,16 @@ class MercadoPagoProvider:
         data_id: str | None = None,
         topic: str | None = None,
     ) -> ProviderWebhookEvent:
-        normalized_data_id = data_id.lower() if data_id else None
-        logger.warning(
-            "mercado_pago.webhook.signature_check query_data_id=%r normalized_data_id=%r "
-            "x_request_id=%r x_request_id_present=%s x_signature_present=%s "
-            "payment_env=test webhook_secret_configured=%s",
-            data_id,
-            normalized_data_id,
-            request_id,
-            str(bool(request_id)).lower(),
-            str(bool(signature)).lower(),
-            str(bool(self._webhook_secret)).lower(),
-        )
-        if not data_id:
-            _reject_webhook("missing_data_id")
-        if not signature:
-            _reject_webhook("missing_signature")
-        if not request_id:
-            _reject_webhook("missing_request_id")
+        if not data_id or not signature or not request_id:
+            logger.warning("webhook_signature_invalid")
+            raise PaymentProviderError("Invalid Mercado Pago webhook signature.", code="webhook_signature_invalid")
         if topic != "order":
-            _reject_webhook("unsupported_topic")
-        self._verify_signature(signature, request_id, data_id)
+            raise PaymentProviderError("Unsupported Mercado Pago webhook topic.")
+        try:
+            WebhookSignatureValidator.validate(signature, request_id, data_id, self._webhook_secret)
+        except (InvalidWebhookSignatureError, TypeError) as exc:
+            logger.warning("webhook_signature_invalid")
+            raise PaymentProviderError("Invalid Mercado Pago webhook signature.", code="webhook_signature_invalid") from exc
         try:
             body = json.loads(payload)
             if not isinstance(body, dict):
@@ -218,12 +186,6 @@ class MercadoPagoProvider:
                 raise ValueError("data.id")
             if body.get("type") != "order":
                 raise ValueError("type")
-            live_mode = body.get("live_mode")
-            logger.warning(
-                "mercado_pago.webhook.signature_valid live_mode=%s seller_id_matches=%s",
-                "true" if live_mode is True else "false" if live_mode is False else "unknown",
-                str(str(body.get("user_id")) == self._test_seller_id).lower(),
-            )
             if body.get("live_mode") is not False or str(body.get("user_id")) != self._test_seller_id:
                 logger.warning("mercado_pago.webhook.rejected reason=production_payment_blocked")
                 raise PaymentProviderError(
@@ -249,30 +211,6 @@ class MercadoPagoProvider:
             external_reference=state.external_reference,
             payment_method=state.payment_method,
         )
-
-    def _verify_signature(self, signature: str, request_id: str, data_id: str) -> None:
-        timestamp, supplied = parse_webhook_signature(signature)
-        if not timestamp:
-            _reject_webhook("missing_ts")
-        if not supplied:
-            _reject_webhook("missing_v1")
-        if not timestamp.isdecimal() or len(supplied) != 64 or any(
-            character not in "0123456789abcdefABCDEF" for character in supplied
-        ):
-            _reject_webhook("signature_mismatch")
-        manifest = build_webhook_manifest(data_id, request_id, timestamp)
-        logger.warning(
-            "mercado_pago.webhook.manifest ts=%r v1_present=true manifest=%r",
-            timestamp,
-            manifest,
-        )
-        expected = hmac.new(self._webhook_secret, manifest.encode("utf-8"), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected, supplied):
-            logger.warning(
-                "mercado_pago.webhook.hash_hints expected=%s...%s received=%s...%s",
-                expected[:6], expected[-6:], supplied[:6], supplied[-6:],
-            )
-            _reject_webhook("signature_mismatch")
 
     def _request_json(
         self,

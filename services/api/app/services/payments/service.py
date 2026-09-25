@@ -240,7 +240,8 @@ def process_webhook(
             topic=topic,
         )
     except PaymentProviderError as exc:
-        logger.warning("payment.webhook.rejected provider=%s reason=%s", provider_name, exc.code)
+        if exc.code != "webhook_signature_invalid":
+            logger.warning("payment.webhook.rejected provider=%s reason=%s", provider_name, exc.code)
         raise PaymentWebhookError(str(exc), 503 if exc.retryable else 401) from exc
     logger.info("payment.webhook.received provider=%s event_id=%s", provider_name, event.event_id)
     result = process_provider_event(provider_name, event, payload)
