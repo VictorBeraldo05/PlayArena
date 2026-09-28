@@ -606,6 +606,11 @@ function ReservationPage() {
                 onChange={changeWalletUsage}
                 quote={quote}
               />
+              {!quote.checkout_available ? (
+                <p aria-live="polite" className="rounded-xl border border-white/[.08] bg-[#18212D]/70 px-3 py-2 text-xs leading-5 text-[#C3CDD7]">
+                  O pagamento via PIX não está disponível para esta conta no momento. Nenhuma cobrança foi iniciada.
+                </p>
+              ) : null}
               {quoteRefreshing ? (
                 <p aria-live="polite" className="text-center text-xs font-semibold text-[#9DA7B3]">
                   Atualizando valores...
@@ -683,6 +688,7 @@ function ReservationPage() {
 function checkoutCtaLabel(quote: CheckoutQuote | null, refreshing: boolean) {
   if (refreshing) return 'Atualizando valores...';
   if (!quote) return 'Carregando valores...';
+  if (!quote.checkout_available) return 'Pagamento indisponível';
   return quote.requires_provider
     ? `Pagar ${formatCurrencyBRL(quote.provider_amount)} via PIX →`
     : `Usar ${formatCurrencyBRL(quote.wallet_amount)} do saldo →`;
@@ -821,7 +827,9 @@ function PaymentChoice({
         <div className="min-w-0 flex-1">
           <b className="block truncate text-[13px]">PIX <span className="font-medium text-[#9DA7B3]">· Mercado Pago</span></b>
         </div>
-        <b className="whitespace-nowrap text-[13px]">{formatCurrencyBRL(quote.provider_amount)}</b>
+        <b className={`whitespace-nowrap text-[13px] ${quote.provider_available ? '' : 'text-[#9DA7B3]'}`}>
+          {quote.provider_available ? formatCurrencyBRL(quote.provider_amount) : 'Indisponível'}
+        </b>
       </div> : null}
       <label
         className={`flex min-h-14 items-center gap-3 border-t border-white/[.07] py-2 ${quote.wallet_has_balance ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
