@@ -4,7 +4,7 @@
 
 O checkout de `/reservar` usa Pix na propria tela, sem redirect. O backend cria uma Order `online` com `processing_mode=automatic` e transacao `payment_method.id=pix`, guarda o ID da Order e o vencimento do Pix e devolve QR Code/copia e cola ao player autenticado. QR e codigo nao sao persistidos no banco. A reserva so e criada apos consulta server-side da Order, com valor, moeda e `external_reference` conferidos. O body do webhook nunca e fonte de status financeiro.
 
-Esta release **aceita apenas teste**: `PAYMENT_ENV=test`, `PAYMENT_SANDBOX_ENABLED=true`, `GET https://api.mercadolibre.com/users/me` antes de criar qualquer Order para conferir `MERCADO_PAGO_TEST_SELLER_ID`, vendedor da Order igual ao mesmo ID e `live_mode=false` no webhook. Orders Pix de teste podem ter ID `ORD01...` e nao trazer `live_mode` na resposta; por isso nao se usa prefixo de Order para inferir ambiente. O token de teste deve ser obtido no painel do Mercado Pago; o prefixo do token tambem nao prova o ambiente. Nunca colocar Access Token ou segredo de webhook no frontend, em `NEXT_PUBLIC_*`, logs ou commits.
+Em test mode, use `PAYMENT_ENV=test`, `PAYMENT_SANDBOX_ENABLED=true` e `MERCADO_PAGO_TEST_SELLER_ID`. Orders Pix de teste podem ter ID `ORD01...` e nao trazer `live_mode` na resposta; por isso nao se usa prefixo de Order para inferir ambiente. O token de teste deve ser obtido no painel do Mercado Pago; o prefixo do token tambem nao prova o ambiente. Nunca colocar Access Token ou segredo de webhook no frontend, em `NEXT_PUBLIC_*`, logs ou commits.
 
 Documentacao oficial: [Pix via Orders API](https://www.mercadopago.com.br/developers/pt/docs/checkout-api-orders/payment-integration/pix), [consulta de Order](https://www.mercadopago.com.br/developers/pt/reference/online-payments/checkout-api/get-order/get), [webhooks](https://www.mercadopago.com.br/developers/pt/docs/checkout-api-orders/optional-notifications).
 
@@ -22,6 +22,34 @@ MERCADO_PAGO_TEST_SELLER_ID=<user-id-do-vendedor-de-teste>
 MERCADO_PAGO_HTTP_TIMEOUT_SECONDS=5
 ```
 
+## Pix real: liberacao e allowlist
+
+`PAYMENT_PRODUCTION_ENABLED` e o kill switch de producao e inicia em `false`. Com `false`, nenhum player cria Pix real. `PAYMENT_PRODUCTION_TEST_ENABLED` nao controla a liberacao geral: com `true`, ativa homologacao controlada e aplica `PAYMENT_PRODUCTION_TEST_ALLOWED_USER_ID` se preenchido; com `false`, ignora esse ID. ID vazio nunca restringe usuarios. O startup registra `payment.mode` e o estado da allowlist sem expor o UUID.
+
+Producao normal, apos aprovacao operacional:
+
+```env
+PAYMENT_PROVIDER=mercado_pago
+PAYMENT_ENV=production
+PAYMENT_SANDBOX_ENABLED=false
+PAYMENT_PRODUCTION_ENABLED=true
+PAYMENT_PRODUCTION_TEST_ENABLED=false
+PAYMENT_PRODUCTION_TEST_ALLOWED_USER_ID=
+```
+
+Homologacao com Pix real para um unico player:
+
+```env
+PAYMENT_PROVIDER=mercado_pago
+PAYMENT_ENV=production
+PAYMENT_SANDBOX_ENABLED=false
+PAYMENT_PRODUCTION_ENABLED=true
+PAYMENT_PRODUCTION_TEST_ENABLED=true
+PAYMENT_PRODUCTION_TEST_ALLOWED_USER_ID=<uuid-do-player>
+```
+
+Nos dois casos, configure Access Token e webhook secret produtivos no backend. Para migrar sem interromper a homologacao existente, defina `PAYMENT_PRODUCTION_ENABLED=true` no Render antes de implantar esta versao; o codigo anterior ignora a nova variavel. Se `PAYMENT_PRODUCTION_TEST_ENABLED=true` sem `PAYMENT_PRODUCTION_ENABLED=true`, o startup falha com erro explicito.
+
 O Pix tem duracao fixa de 30 minutos para manter o payload idempotente. Seu vencimento e salvo em `payments.pix_expires_at`, portanto continua correto mesmo apos refresh ou mudanca de configuracao. O hold efetivo do Mercado Pago e de no minimo 31 minutos, garantindo margem de aproximadamente um minuto. Se `PAYMENT_HOLD_MINUTES` for maior, o hold fica maior, mas o Pix permanece em 30 minutos; o webhook de expiracao libera o hold antecipadamente. `MERCADO_PAGO_RETURN_URL` nao e usada. `PAYMENT_WEBHOOK_SECRET` continua exclusivo do sandbox interno.
 
 No painel do Mercado Pago, em `Suas integracoes` > aplicacao > `Credenciais de teste`, copie o Access Token e o User ID do vendedor de teste para os secrets do Render. Em `Webhooks`, configure notificacoes de **Order** para:
@@ -30,7 +58,7 @@ No painel do Mercado Pago, em `Suas integracoes` > aplicacao > `Credenciais de t
 https://playarena-iwp9.onrender.com/payments/webhooks/mercado-pago
 ```
 
-Obtenha a chave de assinatura no mesmo painel. O destino e o backend, nao o Vercel. O endpoint exige `x-signature`, `x-request-id`, `data.id` e `type=order`; valida HMAC-SHA256 e consulta `GET /v1/orders/{id}`. Notificacoes produtivas sao bloqueadas. Um simulador generico pode enviar `live_mode=true` e receber `401` por design.
+Obtenha a chave de assinatura no mesmo painel. O destino e o backend, nao o Vercel. O endpoint exige `x-signature`, `x-request-id`, `data.id` e `type=order`; valida a assinatura pelo SDK oficial e consulta `GET /v1/orders/{id}`. O ambiente configurado determina as credenciais e as validacoes da Order.
 
 ## Fluxo e carteira
 
@@ -62,4 +90,4 @@ Sem saldo: Pix R$ 5,00. Saldo R$ 2,00: Pix R$ 3,00. Saldo R$ 5,00 ou mais: debit
 - `503` no webhook ou consulta: provider indisponivel; tente novamente com a mesma cobranca, sem novo POST.
 - Order sem instrucoes: confira token de teste, formato do request e logs pelo `payment_id`/Order ID; nao registre QR/codigo.
 - Pagamento pendente: confira webhook e use reconciliacao admin. O player pode reabrir `/reservar` e consultar novamente.
-- `production_payment_blocked`: interrompa a homologacao e revise credencial/ambiente.
+- `production_payment_unavailable`: confira `PAYMENT_PRODUCTION_ENABLED`, modo controlado e allowlist sem criar outra cobranca.

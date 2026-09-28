@@ -539,23 +539,26 @@ def test_wallet_checkout_never_calls_external_provider(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("enabled", "allowed_user_id", "user_id", "should_create"),
+    ("production_enabled", "controlled", "allowed_user_id", "user_id", "should_create"),
     [
-        (False, None, PLAYER.id, False),
-        (True, None, PLAYER.id, True),
-        (True, PLAYER.id, PLAYER.id, True),
-        (True, PLAYER.id, "00000000-0000-0000-0000-00000000000b", False),
+        (False, False, None, PLAYER.id, False),
+        (True, True, PLAYER.id, PLAYER.id, True),
+        (True, True, PLAYER.id, "00000000-0000-0000-0000-00000000000b", False),
+        (True, False, PLAYER.id, "00000000-0000-0000-0000-00000000000b", True),
+        (True, True, None, "00000000-0000-0000-0000-00000000000b", True),
+        (True, False, None, PLAYER.id, True),
     ],
 )
 def test_production_checkout_gate_and_allowed_user(
-    monkeypatch, enabled, allowed_user_id, user_id, should_create
+    monkeypatch, production_enabled, controlled, allowed_user_id, user_id, should_create
 ) -> None:
     config = Settings(
         _env_file=None,
         PAYMENT_PROVIDER="mercado_pago",
         PAYMENT_ENV="production",
         PAYMENT_SANDBOX_ENABLED=False,
-        PAYMENT_PRODUCTION_TEST_ENABLED=enabled,
+        PAYMENT_PRODUCTION_ENABLED=production_enabled,
+        PAYMENT_PRODUCTION_TEST_ENABLED=controlled,
         PAYMENT_PRODUCTION_TEST_ALLOWED_USER_ID=allowed_user_id,
         MERCADO_PAGO_ACCESS_TOKEN="APP_USR_LIVE_ONLY",
         MERCADO_PAGO_WEBHOOK_SECRET="production-webhook-secret",
@@ -583,6 +586,18 @@ def test_production_checkout_gate_and_allowed_user(
         return checkout, True
 
     monkeypatch.setattr(service, "settings", config)
+    monkeypatch.setattr(payments, "settings", config)
+    monkeypatch.setattr(payments, "validate_future_booking_start", lambda _start_at: None)
+    monkeypatch.setattr(payments, "get_checkout_quote", lambda *_args, **_kwargs: {"requires_provider": True})
+    quoted = payments.checkout_quote(
+        court_id=checkout_payload()["court_id"],
+        start_at=START_AT,
+        sport="Society",
+        use_wallet_balance=False,
+        current_user=AuthenticatedUser(id=user_id, email=PLAYER.email),
+    )
+    assert quoted["checkout_available"] is should_create
+    assert quoted["provider_available"] is should_create
     monkeypatch.setattr(service, "create_checkout_record", fake_create_checkout_record)
     monkeypatch.setattr(service, "_configured_provider", lambda: FakeProvider())
     monkeypatch.setattr(
@@ -596,7 +611,7 @@ def test_production_checkout_gate_and_allowed_user(
     else:
         with pytest.raises(service.PaymentConfigurationError) as error:
             service.create_checkout(user_id, checkout_payload(), payer_email=PLAYER.email)
-        assert error.value.code == "production_payment_test_disabled"
+        assert error.value.code == "production_payment_unavailable"
         assert calls == []
 
 

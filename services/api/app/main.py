@@ -25,6 +25,21 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info("CORS allowed origins: %s", settings.allowed_web_origins)
+    if settings.payment_mode == "production_controlled":
+        allowlist = "single_user" if settings.payment_production_test_allowed_user_id else "none"
+    else:
+        allowlist = "ignored" if settings.payment_production_test_allowed_user_id else "inactive"
+    logger.info(
+        "payment.mode environment=%s provider=%s state=%s allowlist=%s",
+        settings.payment_environment,
+        settings.payment_provider,
+        settings.payment_mode,
+        allowlist,
+    )
+    if settings.payment_mode == "production_controlled" and allowlist == "none":
+        logger.warning("payment.mode controlled_without_allowlist: all eligible players can create real Pix")
+    if settings.payment_mode == "production_open" and allowlist == "ignored":
+        logger.warning("payment.mode stale_allowed_user_id_ignored")
     if (
         settings.payment_environment == "test"
         and settings.payment_debug_secret_fingerprint

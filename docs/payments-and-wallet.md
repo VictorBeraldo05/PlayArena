@@ -6,7 +6,7 @@
 - O valor nao e adicional: `court_price_total = booking_amount_paid + amount_due_at_venue`.
 - O saldo e credito interno, sem saque, deposito pelo player, PIX para carteira ou transferencia.
 - O player pode combinar saldo interno e Pix; com saldo menor que R$ 5, o Pix cobra apenas a diferenca.
-- O adapter Mercado Pago existe somente para homologacao em test mode. `PAYMENT_PROVIDER=disabled` continua sendo o default seguro.
+- O adapter Mercado Pago suporta test mode e producao; `PAYMENT_PROVIDER=disabled` e `PAYMENT_PRODUCTION_ENABLED=false` continuam sendo os defaults seguros.
 
 ## Modelo e invariantes
 
@@ -45,9 +45,9 @@ PAYMENT_WEBHOOK_SECRET=<segredo-aleatorio-local>
 
 O endpoint de conclusao sandbox chama o mesmo verificador HMAC e processador idempotente do webhook. Nunca habilite esse modo em producao.
 
-## Mercado Pago Pix/Orders em test mode
+## Mercado Pago Pix/Orders
 
-O adapter usa Pix transparente, `X-Idempotency-Key`, webhook com `x-signature` e consulta server-side em `GET /v1/orders/{id}`. A integracao produtiva permanece bloqueada:
+O adapter usa Pix transparente, `X-Idempotency-Key`, webhook com `x-signature` e consulta server-side em `GET /v1/orders/{id}`. Pix real exige `PAYMENT_PRODUCTION_ENABLED=true`; `PAYMENT_PRODUCTION_TEST_ENABLED=true` ativa a allowlist opcional descrita em [mercado-pago-integration.md](./mercado-pago-integration.md). Referencias:
 
 - [Pix via Orders API](https://www.mercadopago.com.br/developers/pt/docs/checkout-api-orders/payment-integration/pix)
 - [Credenciais e separacao teste/producao](https://www.mercadopago.com.br/developers/pt/docs/checkout-api-orders/resources/credentials)
@@ -63,7 +63,7 @@ Passos manuais antes da homologacao:
 4. Cadastrar URL HTTPS de webhook e obter o segredo de assinatura.
 5. Configurar Render com `PAYMENT_PROVIDER=mercado_pago`, `PAYMENT_ENV=test` e `PAYMENT_SANDBOX_ENABLED=true`.
 6. Executar homologacao completa com credenciais de teste e reconciliacao sem divergencias.
-7. Manter producao bloqueada ate uma sprint especifica, revisao juridica e aprovacao operacional.
+7. Liberar Pix real com `PAYMENT_PRODUCTION_ENABLED=true` somente apos revisao juridica e aprovacao operacional.
 
 Nao criar `NEXT_PUBLIC_PAYMENT_SECRET`. Access Token e segredo de webhook pertencem somente ao backend.
 

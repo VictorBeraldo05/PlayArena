@@ -139,7 +139,7 @@ def create_checkout(user_id: str, data: dict, payer_email: str | None = None) ->
     ):
         if not created and checkout.get("provider_payment_id"):
             return get_player_payment_status(user_id, checkout["payment_id"])
-        raise PaymentConfigurationError("O Pix real esta desabilitado para esta conta.", "production_payment_test_disabled")
+        raise PaymentConfigurationError("O Pix real esta desabilitado para esta conta.", "production_payment_unavailable")
     if not created and checkout["status"] != "pending":
         return checkout
     if not created and checkout.get("provider_payment_id"):

@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     payment_hold_minutes: PositiveInt = Field(default=10, alias="PAYMENT_HOLD_MINUTES")
     payment_provider: Literal["disabled", "sandbox", "mercado_pago"] = Field(default="disabled", alias="PAYMENT_PROVIDER")
     payment_environment: Literal["test", "production"] = Field(default="test", alias="PAYMENT_ENV")
+    payment_production_enabled: bool = Field(default=False, alias="PAYMENT_PRODUCTION_ENABLED")
     payment_production_test_enabled: bool = Field(default=False, alias="PAYMENT_PRODUCTION_TEST_ENABLED")
     payment_production_test_allowed_user_id: UUID | None = Field(
         default=None, alias="PAYMENT_PRODUCTION_TEST_ALLOWED_USER_ID"
@@ -108,7 +109,17 @@ class Settings(BaseSettings):
     @field_validator("payment_production_test_allowed_user_id", mode="before")
     @classmethod
     def empty_allowed_user_id_is_unset(cls, value: object) -> object:
-        return None if value == "" else value
+        return None if isinstance(value, str) and not value.strip() else value
+
+    @property
+    def payment_mode(self) -> str:
+        if self.payment_provider == "disabled":
+            return "disabled"
+        if self.payment_environment == "test":
+            return "test"
+        if not self.payment_production_enabled:
+            return "production_disabled"
+        return "production_controlled" if self.payment_production_test_enabled else "production_open"
 
     @property
     def payment_provider_available(self) -> bool:
@@ -116,12 +127,16 @@ class Settings(BaseSettings):
             return False
         if self.payment_environment == "test":
             return self.payment_sandbox_enabled
-        return self.payment_provider == "mercado_pago" and self.payment_production_test_enabled
+        return self.payment_provider == "mercado_pago" and self.payment_production_enabled
 
     def payment_provider_available_for_user(self, user_id: str) -> bool:
         if not self.payment_provider_available:
             return False
-        if self.payment_environment == "production" and self.payment_production_test_allowed_user_id:
+        if (
+            self.payment_environment == "production"
+            and self.payment_production_test_enabled
+            and self.payment_production_test_allowed_user_id
+        ):
             return user_id == str(self.payment_production_test_allowed_user_id)
         return True
 
@@ -131,6 +146,16 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_payment_configuration(self) -> "Settings":
+        if self.payment_environment != "production" and (
+            self.payment_production_enabled or self.payment_production_test_enabled
+        ):
+            raise ValueError("PAYMENT_PRODUCTION_ENABLED and PAYMENT_PRODUCTION_TEST_ENABLED require PAYMENT_ENV=production.")
+        if self.payment_environment == "production" and self.payment_provider != "mercado_pago" and (
+            self.payment_production_enabled or self.payment_production_test_enabled
+        ):
+            raise ValueError("Production payment flags require PAYMENT_PROVIDER=mercado_pago.")
+        if self.payment_production_test_enabled and not self.payment_production_enabled:
+            raise ValueError("PAYMENT_PRODUCTION_TEST_ENABLED=true requires PAYMENT_PRODUCTION_ENABLED=true.")
         if self.payment_provider == "disabled":
             if self.payment_sandbox_enabled:
                 raise ValueError("PAYMENT_SANDBOX_ENABLED must be false when PAYMENT_PROVIDER is disabled.")

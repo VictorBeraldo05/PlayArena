@@ -776,16 +776,52 @@ def test_mercado_pago_config_separates_production_from_test() -> None:
     enabled = Settings(
         **{**common, "PAYMENT_SANDBOX_ENABLED": False},
         PAYMENT_ENV="production",
+        PAYMENT_PRODUCTION_ENABLED=True,
         PAYMENT_PRODUCTION_TEST_ENABLED=True,
     )
     assert enabled.payment_provider_available
     assert enabled.payment_provider_available_for_user("any-player")
+    assert enabled.payment_mode == "production_controlled"
+    open_to_players = Settings(
+        **{**common, "PAYMENT_SANDBOX_ENABLED": False},
+        PAYMENT_ENV="production",
+        PAYMENT_PRODUCTION_ENABLED=True,
+        PAYMENT_PRODUCTION_TEST_ENABLED=False,
+        PAYMENT_PRODUCTION_TEST_ALLOWED_USER_ID="00000000-0000-0000-0000-00000000000a",
+    )
+    assert open_to_players.payment_provider_available_for_user("00000000-0000-0000-0000-00000000000b")
+    assert open_to_players.payment_mode == "production_open"
+    assert Settings(
+        **{**common, "PAYMENT_SANDBOX_ENABLED": False},
+        PAYMENT_ENV="production",
+        PAYMENT_PRODUCTION_ENABLED=True,
+        PAYMENT_PRODUCTION_TEST_ALLOWED_USER_ID="   ",
+    ).payment_production_test_allowed_user_id is None
+    with pytest.raises(ValidationError, match="PAYMENT_PRODUCTION_TEST_ENABLED=true requires PAYMENT_PRODUCTION_ENABLED=true"):
+        Settings(
+            **{**common, "PAYMENT_SANDBOX_ENABLED": False},
+            PAYMENT_ENV="production",
+            PAYMENT_PRODUCTION_TEST_ENABLED=True,
+        )
+    with pytest.raises(ValidationError, match="PAYMENT_PRODUCTION_ENABLED and PAYMENT_PRODUCTION_TEST_ENABLED require PAYMENT_ENV=production"):
+        Settings(**common, PAYMENT_ENV="test", PAYMENT_PRODUCTION_ENABLED=True)
+    with pytest.raises(ValidationError, match="Production payment flags require PAYMENT_PROVIDER=mercado_pago"):
+        Settings(_env_file=None, PAYMENT_PROVIDER="disabled", PAYMENT_ENV="production", PAYMENT_PRODUCTION_ENABLED=True)
+    with pytest.raises(ValidationError, match="PAYMENT_PRODUCTION_TEST_ALLOWED_USER_ID"):
+        Settings(
+            **{**common, "PAYMENT_SANDBOX_ENABLED": False},
+            PAYMENT_ENV="production",
+            PAYMENT_PRODUCTION_ENABLED=True,
+            PAYMENT_PRODUCTION_TEST_ENABLED=True,
+            PAYMENT_PRODUCTION_TEST_ALLOWED_USER_ID="not-a-uuid",
+        )
     with pytest.raises(ValidationError, match="PAYMENT_SANDBOX_ENABLED=false"):
         Settings(**common, PAYMENT_ENV="production")
     with pytest.raises(ValidationError, match="BOOKING_ADVANCE_AMOUNT=5.00"):
         Settings(
             **{**common, "PAYMENT_SANDBOX_ENABLED": False},
             PAYMENT_ENV="production",
+            PAYMENT_PRODUCTION_ENABLED=True,
             PAYMENT_PRODUCTION_TEST_ENABLED=True,
             BOOKING_ADVANCE_AMOUNT="6.00",
         )
