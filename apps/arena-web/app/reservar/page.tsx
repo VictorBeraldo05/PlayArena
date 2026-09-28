@@ -569,33 +569,26 @@ function ReservationPage() {
   );
 
   return (
-    <main className="min-h-[100dvh] bg-[#080D14] pb-32 text-white">
+    <main className="min-h-[100dvh] bg-[#080D14] pb-[calc(6.5rem+env(safe-area-inset-bottom))] text-white sm:pb-10">
       <div
         aria-hidden="true"
-        className="pointer-events-none fixed inset-x-0 top-0 h-80 bg-[radial-gradient(circle_at_50%_-12%,rgba(143,255,60,.14),transparent_64%)]"
+        className="pointer-events-none fixed inset-x-0 top-0 h-64 bg-[radial-gradient(circle_at_50%_-12%,rgba(143,255,60,.1),transparent_68%)]"
       />
-      <div className="relative mx-auto max-w-[540px] px-4 pb-6 pt-[max(.75rem,env(safe-area-inset-top))] sm:px-5">
-        <header className="grid min-h-12 grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-2">
+      <div className="relative mx-auto max-w-[540px] px-4 pt-[max(.5rem,env(safe-area-inset-top))] sm:px-5 sm:pt-8">
+        <header className="grid min-h-11 grid-cols-[44px_minmax(0,1fr)_auto] items-center gap-2">
           <button
             aria-label="Voltar"
-            className="grid h-9 w-9 place-items-center rounded-xl text-2xl text-[#C3CDD7]"
+            className="grid h-11 w-11 place-items-center rounded-xl text-2xl text-[#C3CDD7] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#8FFF3C]"
             onClick={() => router.back()}
             type="button"
           >
             ‹
           </button>
-          <div className="min-w-0 text-center">
-            <p className="text-[9px] font-extrabold uppercase tracking-[.17em] text-[#8FFF3C]">
-              Checkout seguro
-            </p>
-            <h1 className="mt-0.5 whitespace-nowrap text-[17px] font-black tracking-[-.04em]">
-              Finalizar reserva
-            </h1>
-          </div>
+          <h1 className="min-w-0 whitespace-nowrap text-[17px] font-black tracking-[-.04em] sm:text-lg">Finalizar reserva</h1>
           <WalletBalance balance={quote?.wallet_balance} />
         </header>
         <ArenaSummary intent={intent} quote={quote} />
-        <form className="mt-3 space-y-3" onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void submit(); }}>
+        <form className="mt-3 space-y-3 sm:space-y-4" onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void submit(); }}>
           {isLoading || quoteLoading ? (
             <CheckoutSkeleton />
           ) : !session ? (
@@ -626,11 +619,11 @@ function ReservationPage() {
               onChooseAnother={() => router.push('/buscar/disponibilidade')}
             />
           ) : null}
-          <div className="fixed inset-x-0 bottom-0 z-20 border-t border-white/[.08] bg-[#0B1119]/95 px-4 pb-[max(.75rem,env(safe-area-inset-bottom))] pt-2.5 backdrop-blur-xl">
+          <div className="fixed inset-x-0 bottom-0 z-30 border-t border-white/[.07] bg-[#0B1119]/95 px-4 pb-[max(.75rem,env(safe-area-inset-bottom))] pt-2.5 shadow-[0_-14px_34px_rgba(8,13,20,.72)] backdrop-blur-xl sm:static sm:border-0 sm:bg-transparent sm:px-0 sm:pb-0 sm:pt-2 sm:shadow-none sm:backdrop-blur-none">
             <div className="mx-auto max-w-[540px]">
               {stage === 'failed' ? (
                 <button
-                  className="min-h-14 w-full rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14]"
+                  className="min-h-12 w-full rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
                   onClick={() => {
                     if (resumePaymentId) {
                       setStage('processing');
@@ -648,14 +641,14 @@ function ReservationPage() {
                 </button>
               ) : !session ? (
                 <button
-                  className="min-h-14 w-full rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14]"
+                  className="min-h-12 w-full rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
                   type="submit"
                 >
                   Entrar para continuar
                 </button>
               ) : !profileComplete ? (
                 <button
-                  className="min-h-14 w-full rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14]"
+                  className="min-h-12 w-full rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
                   onClick={completeProfile}
                   type="button"
                 >
@@ -663,7 +656,7 @@ function ReservationPage() {
                 </button>
               ) : (
                 <button
-                  className="min-h-14 w-full rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14] disabled:cursor-not-allowed disabled:opacity-45"
+                  className="min-h-12 w-full rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white disabled:cursor-not-allowed disabled:bg-[#4E6A37] disabled:text-[#C3D2B5]"
                   disabled={
                     !quote ||
                     quoteLoading ||
@@ -676,8 +669,8 @@ function ReservationPage() {
                   {checkoutCtaLabel(quote, quoteRefreshing)}
                 </button>
               )}
-              <p className="mt-1.5 text-center text-[10px] font-semibold text-[#7F8A97]">
-                Pagamento protegido pelo PlayArena
+              <p className="mt-1 text-center text-[10px] font-semibold text-[#9DA7B3]">
+                Pagamento protegido pela PlayArena
               </p>
             </div>
           </div>
@@ -697,13 +690,12 @@ function checkoutCtaLabel(quote: CheckoutQuote | null, refreshing: boolean) {
 
 function WalletBalance({ balance }: { balance?: string | number }) {
   return (
-    <div className="flex min-w-[86px] items-center justify-end gap-1.5 rounded-xl border border-white/[.08] bg-[#111923]/90 px-2.5 py-2">
-      <WalletIcon />
-      <div className="min-w-0 text-right leading-none">
-        <span className="block text-[8px] font-bold uppercase tracking-[.08em] text-[#7F8A97]">
+    <div className="min-w-[92px] rounded-xl bg-[#18212D]/80 px-2.5 py-1.5 text-right leading-none">
+      <div className="min-w-0">
+        <span className="block text-[9px] font-bold text-[#9DA7B3]">
           Saldo PlayArena
         </span>
-        <b className="mt-1 block whitespace-nowrap text-[11px]">
+        <b className="mt-1 block whitespace-nowrap text-xs">
           {balance === undefined ? '—' : formatCurrencyBRL(balance)}
         </b>
       </div>
@@ -724,23 +716,23 @@ function ArenaSummary({
   const start = quote?.start_at ?? intent.startAt;
   const end = quote?.end_at ?? intent.endAt;
   return (
-    <section className="mt-3 overflow-hidden rounded-[20px] border border-white/[.08] bg-[#111923]">
-      <div className="grid grid-cols-[76px_1fr]">
+    <section className="mt-3 overflow-hidden rounded-[18px] border border-white/[.06] bg-[#111923] shadow-[0_12px_30px_rgba(0,0,0,.15)]">
+      <div className="grid grid-cols-[68px_minmax(0,1fr)]">
         <ArenaMedia
           arena={{ name: arena, logo_path: quote?.logo_path ?? intent.logoPath }}
-          className="min-h-[112px]"
+          className="min-h-[92px]"
           critical
           prefer="logo"
           sport={sport}
           variant="ticket"
         />
-        <div className="flex min-w-0 flex-col justify-center px-3.5 py-3">
-          <h2 className="truncate text-base font-black">{arena}</h2>
-          <p className="mt-0.5 truncate text-xs text-[#9DA7B3]">
+        <div className="flex min-w-0 flex-col justify-center px-3 py-2.5">
+          <h2 className="truncate text-[15px] font-black tracking-[-.025em]">{arena}</h2>
+          <p className="truncate text-[11px] text-[#9DA7B3]">
             {court} · {sport}
           </p>
-          <p className="mt-3 text-xs font-bold">{friendlyDate(start)}</p>
-          <p className="mt-0.5 text-xs text-[#C3CDD7]">
+          <p className="mt-2 text-[11px] font-bold">{friendlyDate(start)}</p>
+          <p className="text-xs font-semibold text-[#C3CDD7]">
             {formatReservationTimeRange(start, end)}
           </p>
         </div>
@@ -751,17 +743,16 @@ function ArenaSummary({
 
 function FeeExplanation({ amount }: { amount: string | number }) {
   return (
-    <section className="flex items-start gap-3 rounded-[18px] border border-[#8FFF3C]/20 bg-[#8FFF3C]/[.055] p-3.5">
-      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-[#8FFF3C]/10 text-[#8FFF3C]">
+    <section className="flex items-start gap-2.5 border-l-2 border-[#8FFF3C]/70 py-1 pl-3">
+      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-[#8FFF3C]/10 text-[#8FFF3C]">
         <ShieldIcon />
       </span>
       <div className="min-w-0">
-        <h2 className="text-sm font-extrabold">
-          Você paga {formatCurrencyBRL(amount)} para solicitar a reserva
+        <h2 className="text-[13px] font-extrabold leading-5">
+          {formatCurrencyBRL(amount)} para solicitar a reserva
         </h2>
-        <p className="mt-1 text-[11px] leading-[1.45] text-[#9DA7B3]">
-          Se confirmada, esse valor é descontado do pagamento na arena. Se a arena recusar, os{' '}
-          {formatCurrencyBRL(amount)} voltam para seu Saldo PlayArena.
+        <p className="mt-0.5 text-[11px] leading-[1.4] text-[#9DA7B3]">
+          Confirmou? Descontamos do valor na arena. Recusou? O valor volta ao seu Saldo PlayArena.
         </p>
       </div>
     </section>
@@ -770,14 +761,14 @@ function FeeExplanation({ amount }: { amount: string | number }) {
 
 function Values({ quote }: { quote: CheckoutQuote }) {
   return (
-    <section className="rounded-[18px] border border-white/[.08] bg-[#111923] px-4 py-3.5">
+    <section className="border-y border-white/[.08] px-1 py-2.5">
       <p className="text-[10px] font-extrabold uppercase tracking-[.16em] text-[#9DA7B3]">
         Valores
       </p>
-      <div className="mt-2.5 space-y-2 text-xs">
+      <div className="mt-2 space-y-1.5 text-xs">
         <ValueRow label="Valor do campo" value={formatCurrencyBRL(quote.court_price_total)} />
-        <ValueRow accent label="Pago agora" value={formatCurrencyBRL(quote.booking_amount)} />
-        <div className="h-px bg-white/[.08]" />
+        <ValueRow accent label="Pagar agora" value={formatCurrencyBRL(quote.booking_amount)} />
+        <div className="h-px bg-white/[.06]" />
         <ValueRow
           strong
           label="Pagar na arena"
@@ -799,9 +790,9 @@ function ValueRow({
   strong?: boolean;
 }) {
   return (
-    <p className="flex items-center justify-between gap-4">
+    <p className="flex items-center justify-between gap-4 leading-5">
       <span className={strong ? 'font-bold text-white' : 'text-[#9DA7B3]'}>{label}</span>
-      <b className={accent ? 'text-[#8FFF3C]' : strong ? 'text-sm text-white' : 'text-white'}>
+      <b className={`whitespace-nowrap ${accent ? 'text-sm text-[#8FFF3C]' : strong ? 'text-[15px] text-white' : 'text-white'}`}>
         {value}
       </b>
     </p>
@@ -818,41 +809,31 @@ function PaymentChoice({
   disabled: boolean;
 }) {
   const walletEnabled = quote.use_wallet_balance && quote.wallet_has_balance;
-  const plan = quote.requires_provider
-    ? walletEnabled
-      ? `${formatCurrencyBRL(quote.wallet_amount)} do saldo + ${formatCurrencyBRL(quote.provider_amount)} via PIX`
-      : `${formatCurrencyBRL(quote.provider_amount)} via PIX`
-    : `${formatCurrencyBRL(quote.wallet_amount)} do Saldo PlayArena`;
   return (
-    <section className="rounded-[18px] border border-white/[.08] bg-[#111923] p-4">
+    <section className="px-1">
       <p className="text-[10px] font-extrabold uppercase tracking-[.16em] text-[#9DA7B3]">
         Forma de pagamento
       </p>
-      {quote.requires_provider ? <div className="mt-2.5 flex items-center gap-3 rounded-2xl bg-[#18212D] px-3.5 py-3">
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#8FFF3C]/10 text-[#8FFF3C]">
+      {quote.requires_provider ? <div className="mt-1.5 flex min-h-11 items-center gap-2.5">
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[#8FFF3C]/10 text-[#8FFF3C]">
           <PixIcon />
         </span>
         <div className="min-w-0 flex-1">
-          <b className="block text-sm">PIX</b>
-          <span className="mt-0.5 block text-[11px] text-[#9DA7B3]">
-            Pagamento seguro via Mercado Pago
-          </span>
+          <b className="block truncate text-[13px]">PIX <span className="font-medium text-[#9DA7B3]">· Mercado Pago</span></b>
         </div>
-        <b className="whitespace-nowrap text-sm">{formatCurrencyBRL(quote.provider_amount)}</b>
+        <b className="whitespace-nowrap text-[13px]">{formatCurrencyBRL(quote.provider_amount)}</b>
       </div> : null}
       <label
-        className={`mt-2.5 flex items-center gap-3 rounded-2xl border px-3.5 py-3 ${
-          quote.wallet_has_balance
-            ? 'cursor-pointer border-white/[.08] bg-[#0D151F]'
-            : 'cursor-not-allowed border-white/[.05] bg-[#0D151F]/60'
-        }`}
+        className={`flex min-h-14 items-center gap-3 border-t border-white/[.07] py-2 ${quote.wallet_has_balance ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
       >
         <span className="min-w-0 flex-1">
-          <b className="block text-sm">Usar meu Saldo PlayArena</b>
-          <small className="mt-0.5 block text-[11px] text-[#9DA7B3]">
-            {quote.wallet_has_balance
-              ? `Saldo disponível: ${formatCurrencyBRL(quote.wallet_balance)}`
-              : 'Você ainda não possui saldo.'}
+          <b className="block text-[13px]">Usar Saldo PlayArena</b>
+          <small aria-live="polite" className="block text-[11px] leading-4 text-[#9DA7B3]">
+            {walletEnabled
+              ? `Saldo disponível: ${formatCurrencyBRL(quote.wallet_balance)} · usar ${formatCurrencyBRL(quote.wallet_amount)}`
+              : quote.wallet_has_balance
+                ? `Saldo disponível: ${formatCurrencyBRL(quote.wallet_balance)}`
+                : 'Saldo disponível: R$ 0,00'}
           </small>
         </span>
         <input
@@ -861,13 +842,11 @@ function PaymentChoice({
           className="peer sr-only"
           disabled={disabled || !quote.wallet_has_balance}
           onChange={(event) => onChange(event.target.checked)}
+          style={{ width: 1, minHeight: 1 }}
           type="checkbox"
         />
-        <span className="relative h-6 w-11 shrink-0 rounded-full bg-[#27313D] transition-colors after:absolute after:left-1 after:top-1 after:h-4 after:w-4 after:rounded-full after:bg-[#9DA7B3] after:transition-transform peer-checked:bg-[#8FFF3C] peer-checked:after:translate-x-5 peer-checked:after:bg-[#080D14] peer-disabled:opacity-45" />
+        <span className="relative h-7 w-12 shrink-0 rounded-full bg-[#27313D] transition-colors after:absolute after:left-1 after:top-1 after:h-5 after:w-5 after:rounded-full after:bg-[#9DA7B3] after:transition-transform peer-checked:bg-[#8FFF3C] peer-checked:after:translate-x-5 peer-checked:after:bg-[#080D14] peer-focus-visible:ring-2 peer-focus-visible:ring-[#8FFF3C] peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-[#080D14] peer-disabled:opacity-45" />
       </label>
-      <p className="mt-2.5 rounded-xl border border-white/[.06] bg-white/[.025] px-3 py-2 text-center text-[11px] font-bold text-[#C3CDD7]">
-        {plan}
-      </p>
     </section>
   );
 }
@@ -1294,25 +1273,6 @@ function ShieldIcon() {
     >
       <path d="M12 3 5 6v5c0 4.6 2.8 8.1 7 10 4.2-1.9 7-5.4 7-10V6z" />
       <path d="m9 12 2 2 4-4" />
-    </svg>
-  );
-}
-function WalletIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="text-[#8FFF3C]"
-      fill="none"
-      height="18"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="1.7"
-      viewBox="0 0 24 24"
-      width="18"
-    >
-      <path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H19a1 1 0 0 1 1 1v13H6.5A2.5 2.5 0 0 1 4 16.5z" />
-      <path d="M4 8h15M16 12h4v4h-4a2 2 0 0 1 0-4Z" />
     </svg>
   );
 }
