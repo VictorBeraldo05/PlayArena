@@ -8,6 +8,7 @@ import { ArenaMedia } from '../../components/arena-media';
 import { useAuth } from '../../components/use-auth';
 import { ApiRequestError, apiRequest } from '../../lib/api';
 import { trackEvent } from '../../lib/analytics';
+import { pixExpiryState } from '../../lib/pix-expiration.mjs';
 import {
   formatCurrencyBRL,
   formatReservationDateParts,
@@ -345,7 +346,7 @@ function ReservationPage() {
       }
       attempts += 1;
       if (attempts < 90 && active) timer = window.setTimeout(() => void poll(), 2000);
-      else if (active) setPollError('Consulta automática pausada. Toque em Consultar agora para verificar o Pix.');
+      else if (active) setPollError('Ainda aguardando o pagamento. A consulta automática foi pausada.');
     };
     timer = window.setTimeout(() => void poll(), 2000);
     return () => { active = false; window.clearTimeout(timer); };
@@ -891,9 +892,7 @@ function PixPayment({
     return () => window.clearInterval(timer);
   }, []);
   const instructions = payment.instructions;
-  const expiresAt = Date.parse(instructions?.expires_at ?? payment.expires_at);
-  const secondsLeft = Number.isFinite(expiresAt) ? Math.max(0, Math.ceil((expiresAt - now) / 1000)) : 0;
-  const expired = payment.status === 'expired' || secondsLeft === 0;
+  const { secondsLeft, expired } = pixExpiryState(payment, now);
   const unavailable = payment.status === 'failed' || payment.status === 'cancelled';
   const copyCode = instructions?.copy_paste || instructions?.qr_code;
   return (
@@ -933,7 +932,7 @@ function PixPayment({
                 ) : <span className="text-center text-xs font-semibold text-[#C3CDD7]">{instructions ? 'QR Code indisponível. Use o Pix copia e cola abaixo.' : 'Gerando seu Pix...'}</span>}
               </div>
               <p className="mt-4 text-center text-xs font-bold text-[#C3CDD7]">
-                {secondsLeft > 0 ? `Pix válido por ${String(Math.floor(secondsLeft / 60)).padStart(2, '0')}:${String(secondsLeft % 60).padStart(2, '0')}` : 'Consultando validade do Pix...'}
+                {secondsLeft !== null && secondsLeft > 0 ? `Pix válido por ${String(Math.floor(secondsLeft / 60)).padStart(2, '0')}:${String(secondsLeft % 60).padStart(2, '0')}` : 'Consultando validade do Pix...'}
               </p>
               <p className="mt-5 text-[10px] font-extrabold uppercase tracking-[.13em] text-[#9DA7B3]">Pix copia e cola</p>
               <div className="mt-2 rounded-xl border border-white/[.08] bg-[#080D14] px-3 py-3 text-xs leading-relaxed text-[#C3CDD7] break-all">
@@ -962,7 +961,7 @@ function PixPayment({
         {pollError ? (
           <div className="mt-3 rounded-2xl border border-white/[.08] bg-[#111923] p-4 text-xs text-[#C3CDD7]">
             <p>{pollError}</p>
-            <button className="mt-2 font-bold text-[#8FFF3C]" onClick={onRefresh} type="button">Consultar agora</button>
+            <button className="mt-2 font-bold text-[#8FFF3C]" onClick={onRefresh} type="button">Verificar pagamento</button>
           </div>
         ) : null}
         <p className="mt-5 text-center text-xs leading-relaxed text-[#7F8A97]">Você pode manter esta tela aberta. Também verificaremos o pagamento quando voltar.</p>

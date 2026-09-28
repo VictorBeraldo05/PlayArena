@@ -54,6 +54,7 @@ class ProviderPaymentState:
     external_reference: str
     instructions: PaymentInstructions | None = None
     payment_method: str | None = None
+    provider_status: str | None = None
 
 
 @dataclass(frozen=True)

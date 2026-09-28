@@ -77,7 +77,7 @@ def available(city: str | None, sport: str, start_at: datetime, arena_id: UUID |
                 and r.reservation_window && tstzrange(ca.start_at, ca.end_at, '[)')
             ) and not exists (
               select 1 from public.booking_holds h where h.court_id = ca.court_id
-                and h.status = 'active' and h.expires_at > timezone('utc', now())
+                and h.status = 'active' and h.expires_at > now()
                 and h.hold_window && tstzrange(ca.start_at, ca.end_at, '[)')
             )
         """), {"city": city, "sport": sport, "start_at": start_at, "arena_id": arena_id, "court_id": court_id}).mappings()
@@ -199,7 +199,7 @@ def public_arena_schedule(arena_id: UUID, day: date, court_id: UUID | None = Non
                 exists(
                   select 1 from public.booking_holds h
                   where h.court_id = slot.court_id and h.status = 'active'
-                    and h.expires_at > timezone('utc', now())
+                    and h.expires_at > now()
                     and h.hold_window && tstzrange(slot.start_at, slot.end_at, '[)')
                 ) as is_held,
                 (

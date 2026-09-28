@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import json
 from dataclasses import asdict, replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -20,11 +20,33 @@ from app.services.payments.mercado_pago import MercadoPagoProvider
 from app.services.payments.providers import (
     PaymentProvider,
     PaymentProviderError,
+    ProviderPaymentState,
     ProviderWebhookEvent,
     SandboxPaymentProvider,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _log_payment_expiry_diagnostic(
+    payment: dict, state: ProviderPaymentState | None = None
+) -> None:
+    if not settings.payment_debug_payment_id or str(payment.get("payment_id")) != str(settings.payment_debug_payment_id):
+        return
+    logger.info(
+        "payment.expiry_diagnostic payment_id=%s provider_order_id=%s "
+        "payment_status_local=%s provider_status=%s provider_status_detail=%s "
+        "created_at=%s expires_at=%s current_utc=%s hold_expires_at=%s",
+        payment.get("payment_id"),
+        payment.get("provider_payment_id"),
+        payment.get("status"),
+        state.provider_status if state else None,
+        state.status_detail if state else None,
+        payment.get("created_at"),
+        payment.get("expires_at"),
+        datetime.now(timezone.utc).isoformat(),
+        payment.get("hold_expires_at"),
+    )
 
 
 class PaymentConfigurationError(Exception):
@@ -81,6 +103,15 @@ def _pix_expires_at(hold_expires_at: datetime) -> datetime:
     return hold_expires_at - timedelta(minutes=1)
 
 
+def _payment_pix_expires_at(payment: dict) -> datetime:
+    hold_expires_at = payment.get("hold_expires_at")
+    expected = min(payment["expires_at"], _pix_expires_at(hold_expires_at)) if hold_expires_at else payment["expires_at"]
+    stored = payment.get("pix_expires_at")
+    if stored and abs((stored - expected).total_seconds()) <= 60:
+        return stored
+    return expected
+
+
 def create_checkout(user_id: str, data: dict, payer_email: str | None = None) -> dict:
     payment_method = data["payment_method"]
     provider_name = settings.payment_provider if settings.payment_provider_available_for_user(user_id) else None
@@ -130,7 +161,7 @@ def create_checkout(user_id: str, data: dict, payer_email: str | None = None) ->
             payment_id=str(checkout["payment_id"]),
             amount=Decimal(checkout["provider_amount"]),
             currency=str(checkout["currency"]),
-            expires_at=(checkout.get("pix_expires_at") or _pix_expires_at(checkout["expires_at"])) if provider.name == "mercado_pago" else checkout["expires_at"],
+            expires_at=_payment_pix_expires_at(checkout) if provider.name == "mercado_pago" else checkout["expires_at"],
             idempotency_key=data["idempotency_key"],
             payer_email=payer_email,
         )
@@ -169,10 +200,11 @@ def create_checkout(user_id: str, data: dict, payer_email: str | None = None) ->
             provider_payment.checkout_url,
         )
         result = {**checkout, **attached}
+        _log_payment_expiry_diagnostic(result)
         if provider_payment.instructions:
             result["instructions"] = asdict(replace(
                 provider_payment.instructions,
-                expires_at=checkout.get("pix_expires_at") or _pix_expires_at(checkout["expires_at"]),
+                expires_at=_payment_pix_expires_at(checkout),
             ))
         return result
     except Exception as exc:  # noqa: BLE001 - retry must reuse the provider idempotency key.
@@ -185,6 +217,7 @@ def create_checkout(user_id: str, data: dict, payer_email: str | None = None) ->
 
 def get_player_payment_status(user_id: str, payment_id: UUID | str) -> dict:
     payment = get_player_payment(user_id, payment_id)
+    _log_payment_expiry_diagnostic(payment)
     if (
         payment["provider"] != "mercado_pago"
         or payment.get("payment_method") != "pix"
@@ -224,8 +257,9 @@ def get_player_payment_status(user_id: str, payment_id: UUID | str) -> dict:
         payment = get_player_payment(user_id, payment_id)
     if payment["status"] == "pending" and state.instructions:
         payment["instructions"] = asdict(
-            replace(state.instructions, expires_at=payment.get("pix_expires_at") or _pix_expires_at(payment["expires_at"]))
+            replace(state.instructions, expires_at=_payment_pix_expires_at(payment))
         )
+    _log_payment_expiry_diagnostic(payment, state)
     return payment
 
 
@@ -276,6 +310,7 @@ def reconcile_mercado_pago_payment(payment_id: UUID) -> dict:
         state = provider.get_payment(str(payment["provider_payment_id"]))
     except PaymentProviderError as exc:
         raise PaymentConfigurationError(str(exc), exc.code) from exc
+    _log_payment_expiry_diagnostic(payment, state)
     event = ProviderWebhookEvent(
         event_id=f"reconcile:{state.provider_payment_id}:{state.status}:{state.status_detail}",
         provider_payment_id=state.provider_payment_id,

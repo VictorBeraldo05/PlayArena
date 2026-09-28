@@ -351,6 +351,7 @@ class MercadoPagoProvider:
             external_reference=external_reference,
             instructions=instructions,
             payment_method=payment_method.get("id") if isinstance(payment_method, dict) else None,
+            provider_status=provider_status,
         )
 
     def _require_environment_response(self, data: dict[str, Any], *, indeterminate: bool = False) -> None:

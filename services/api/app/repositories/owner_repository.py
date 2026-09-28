@@ -387,7 +387,7 @@ def create_blocked_slot(user_id: str, data: dict[str, Any]) -> dict[str, Any]:
         expire_stale_holds(session)
         lock_booking_slot(session, data["court_id"], data["start_at"], data["end_at"])
         held = session.execute(text("""select 1 from public.booking_holds where court_id=:court_id
-          and status='active' and expires_at > timezone('utc', now())
+          and status='active' and expires_at > now()
           and hold_window && tstzrange(:start_at,:end_at,'[)')"""), data).scalar_one_or_none()
         if held is not None:
             raise ReservationConflictError
@@ -402,7 +402,7 @@ def create_manual_reservation(user_id: str, data: dict[str, Any]) -> dict[str, A
             expire_stale_holds(session)
             lock_booking_slot(session, data["court_id"], data["start_at"], data["end_at"])
             held = session.execute(text("""select 1 from public.booking_holds where court_id=:court_id
-              and status='active' and expires_at > timezone('utc', now())
+              and status='active' and expires_at > now()
               and hold_window && tstzrange(:start_at,:end_at,'[)')"""), data).scalar_one_or_none()
             if held is not None:
                 raise ReservationConflictError

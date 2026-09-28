@@ -85,6 +85,7 @@ class Settings(BaseSettings):
         default=None, alias="PAYMENT_PRODUCTION_TEST_ALLOWED_USER_ID"
     )
     payment_debug_secret_fingerprint: bool = Field(default=False, alias="PAYMENT_DEBUG_SECRET_FINGERPRINT")
+    payment_debug_payment_id: UUID | None = Field(default=None, alias="PAYMENT_DEBUG_PAYMENT_ID")
     payment_sandbox_enabled: bool = Field(default=False, alias="PAYMENT_SANDBOX_ENABLED")
     payment_webhook_secret: str | None = Field(default=None, alias="PAYMENT_WEBHOOK_SECRET")
     mercado_pago_access_token: str | None = Field(default=None, alias="MERCADO_PAGO_ACCESS_TOKEN")

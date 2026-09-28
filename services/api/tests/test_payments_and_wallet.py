@@ -4,6 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import HTTPException
@@ -993,7 +994,159 @@ def test_hold_expiration_and_availability_are_consistent() -> None:
     schedule_source = inspect.getsource(booking_repository.public_arena_schedule)
     expire_source = inspect.getsource(payment_repository.expire_stale_holds)
     assert "public.booking_holds" in available_source
-    assert "h.expires_at > timezone('utc', now())" in available_source
+    assert "h.expires_at > now()" in available_source
     assert "public.booking_holds" in schedule_source
     assert "status = 'expired'" in expire_source
     assert "update public.payments" in expire_source
+
+
+def test_expiration_queries_compare_timestamptz_with_now() -> None:
+    statements = []
+
+    class Session:
+        def execute(self, statement, _params=None):
+            statements.append(str(statement))
+
+    payment_repository.expire_stale_holds(Session())
+    assert "expires_at <= now()" in statements[0]
+    assert "timezone('utc', now())" not in statements[0]
+    assert "h.expires_at <= now()" in inspect.getsource(payment_repository.process_provider_event)
+
+    instant = datetime(2026, 9, 28, 18, tzinfo=timezone.utc)
+    misread_utc_clock = instant.replace(tzinfo=ZoneInfo("America/Sao_Paulo"))
+    assert misread_utc_clock.astimezone(timezone.utc) == instant + timedelta(hours=3)
+
+
+@pytest.mark.parametrize("hold_minutes", [31, 45])
+def test_checkout_stores_pix_30_minutes_before_hold_expiration(monkeypatch, hold_minutes) -> None:
+    class Session:
+        def __init__(self):
+            self.statements = []
+
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            self.statements.append(sql)
+            if "update public.booking_holds" in sql or "with expired_payments as" in sql:
+                return Result()
+            if "insert into public.booking_holds" in sql:
+                return Result({"id": UUID("70000000-0000-0000-0000-000000000001")})
+            if "insert into public.payments" in sql:
+                return Result({
+                    "payment_id": PAYMENT_ID,
+                    "provider": "mercado_pago",
+                    "provider_amount": Decimal("5.00"),
+                    "status": "pending",
+                    "expires_at": params["payment_expires_at"],
+                    "pix_expires_at": params["payment_expires_at"],
+                })
+            raise AssertionError(sql)
+
+    session = Session()
+    monkeypatch.setattr(payment_repository, "get_session_factory", lambda: TransactionFactory(session))
+    monkeypatch.setattr(payment_repository, "_existing_checkout", lambda *_args: None)
+    monkeypatch.setattr(payment_repository, "_lock_slot", lambda *_args: None)
+    monkeypatch.setattr(payment_repository, "_resolve_booking", lambda *_args, **_kwargs: {
+        "court_id": checkout_payload()["court_id"],
+        "end_at": START_AT + timedelta(hours=1),
+        "court_price_total": Decimal("115.00"),
+    })
+
+    payment, created = payment_repository.create_checkout_record(
+        user_id=PLAYER.id,
+        court_id=checkout_payload()["court_id"],
+        start_at=START_AT,
+        sport="Society",
+        payment_method="provider",
+        idempotency_key="checkout_1234567890abcdef",
+        advance_amount=Decimal("5.00"),
+        hold_minutes=hold_minutes,
+        provider_name="mercado_pago",
+    )
+    assert created
+    assert payment["hold_expires_at"] - payment["expires_at"] == timedelta(minutes=hold_minutes - 30)
+    assert timedelta(minutes=29) < payment["expires_at"] - datetime.now(timezone.utc) < timedelta(minutes=31)
+    assert any("now() + interval '30 minutes'" in sql for sql in session.statements)
+
+
+def test_waiting_transfer_polls_stay_pending_at_two_four_and_six_seconds(monkeypatch) -> None:
+    created_at = datetime.now(timezone.utc)
+    payment = payment_row(
+        provider="mercado_pago",
+        provider_payment_id="ORD01LIVE",
+        status="pending",
+        created_at=created_at,
+        expires_at=created_at + timedelta(minutes=30),
+        hold_expires_at=created_at + timedelta(minutes=31),
+    )
+
+    class Provider:
+        def get_payment(self, _order_id):
+            return ProviderPaymentState(
+                provider_payment_id="ORD01LIVE",
+                status="pending",
+                provider_status="action_required",
+                status_detail="waiting_transfer",
+                amount=Decimal("5.00"),
+                currency="BRL",
+                external_reference=str(PAYMENT_ID),
+                payment_method="pix",
+            )
+
+    monkeypatch.setattr(service, "get_player_payment", lambda *_args: payment.copy())
+    monkeypatch.setattr(service, "_mercado_pago_provider", lambda: Provider())
+    monkeypatch.setattr(service, "process_provider_event", lambda *_args: pytest.fail("pending must not be finalized"))
+    for seconds in (2, 4, 6):
+        assert created_at + timedelta(seconds=seconds) < payment["expires_at"]
+        assert service.get_player_payment_status(PLAYER.id, PAYMENT_ID)["status"] == "pending"
+
+
+def test_provider_timeout_does_not_finalize_pending_payment(monkeypatch) -> None:
+    payment = payment_row(provider="mercado_pago", provider_payment_id="ORD01LIVE", status="pending")
+
+    class Provider:
+        def get_payment(self, _order_id):
+            raise PaymentProviderError("timeout", code="provider_timeout", retryable=True)
+
+    monkeypatch.setattr(service, "get_player_payment", lambda *_args: payment)
+    monkeypatch.setattr(service, "_mercado_pago_provider", lambda: Provider())
+    monkeypatch.setattr(service, "process_provider_event", lambda *_args: pytest.fail("timeout must not finalize"))
+    with pytest.raises(service.PaymentConfigurationError) as error:
+        service.get_player_payment_status(PLAYER.id, PAYMENT_ID)
+    assert error.value.code == "provider_timeout"
+    assert payment["status"] == "pending"
+
+
+def test_legacy_pix_deadline_with_timezone_skew_uses_hold_limit() -> None:
+    hold_expires_at = datetime.now(timezone.utc) + timedelta(minutes=31)
+    payment = {
+        "expires_at": hold_expires_at,
+        "hold_expires_at": hold_expires_at,
+        "pix_expires_at": hold_expires_at + timedelta(hours=3, minutes=-1),
+    }
+    assert service._payment_pix_expires_at(payment) == hold_expires_at - timedelta(minutes=1)
+
+
+def test_expiry_diagnostic_logs_only_selected_payment(monkeypatch, caplog) -> None:
+    caplog.set_level("INFO")
+    monkeypatch.setattr(service, "settings", SimpleNamespace(payment_debug_payment_id=PAYMENT_ID))
+    payment = payment_row(
+        created_at=datetime.now(timezone.utc),
+        hold_expires_at=datetime.now(timezone.utc) + timedelta(minutes=31),
+    )
+    state = ProviderPaymentState(
+        provider_payment_id="ORD01LIVE",
+        status="pending",
+        provider_status="action_required",
+        status_detail="waiting_transfer",
+        amount=Decimal("5.00"),
+        currency="BRL",
+        external_reference=str(PAYMENT_ID),
+    )
+    service._log_payment_expiry_diagnostic(payment, state)
+    assert "provider_status=action_required" in caplog.text
+    assert "provider_status_detail=waiting_transfer" in caplog.text
+    assert "hold_expires_at=" in caplog.text
+    assert "current_utc=" in caplog.text
+    caplog.clear()
+    service._log_payment_expiry_diagnostic({**payment, "payment_id": UUID(int=2)}, state)
+    assert "payment.expiry_diagnostic" not in caplog.text

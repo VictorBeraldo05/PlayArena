@@ -74,7 +74,7 @@ def expire_stale_holds(session: Any) -> None:
     session.execute(text("""
         update public.booking_holds
         set status = 'expired'
-        where status = 'active' and expires_at <= timezone('utc', now())
+        where status = 'active' and expires_at <= now()
     """))
     session.execute(text("""
         with expired_payments as (
@@ -113,7 +113,7 @@ def _available_wallet_balance(
         from public.payments
         where user_id = :user_id and status = 'pending'
           and not wallet_debited and wallet_amount > 0
-          and expires_at > timezone('utc', now())
+          and expires_at > now()
           {exclude_clause}
     """), {"user_id": user_id, "exclude_payment_id": exclude_payment_id}).scalar_one()
     return max(Decimal("0.00"), _wallet_balance(session, user_id) - _decimal(reserved))
@@ -169,7 +169,7 @@ def _resolve_booking(
           ) as is_reserved,
           exists (
             select 1 from public.booking_holds h where h.court_id = :court_id
-              and h.status = 'active' and h.expires_at > timezone('utc', now())
+              and h.status = 'active' and h.expires_at > now()
               and h.hold_window && tstzrange(:start_at, :end_at, '[)')
           ) as is_held,
           (
@@ -232,6 +232,7 @@ def _payment_response(payment: dict[str, Any], booking: dict[str, Any] | None = 
             for key in (
                 "arena_id", "arena_name", "logo_path", "court_id", "court_name", "sport_id", "sport_name",
                 "start_at", "end_at", "court_price_total", "booking_amount", "amount_due_at_venue", "currency",
+                "hold_expires_at",
             )
             if key in booking
         })
@@ -244,6 +245,7 @@ def _existing_checkout(session: Any, user_id: str, idempotency_key: str) -> dict
                p.amount, p.wallet_amount, p.provider_amount, p.use_wallet_balance,
                p.wallet_debited, p.payment_method,
                p.currency, p.status, p.checkout_url, p.expires_at, p.pix_expires_at,
+               p.created_at, h.expires_at as hold_expires_at,
                h.arena_id, a.name as arena_name, a.logo_path, h.court_id, c.name as court_name,
                h.sport_id, s.name as sport_name, h.start_at, h.end_at,
                h.court_price_total, h.booking_amount, h.amount_due_at_venue
@@ -336,7 +338,12 @@ def create_checkout_record(
             if provider_amount > 0 and provider_name not in {"sandbox", "mercado_pago"}:
                 raise CheckoutConfigurationError("O pagamento via PIX ainda nao esta disponivel.")
 
-            expires_at = datetime.now(timezone.utc) + timedelta(minutes=hold_minutes)
+            issued_at = datetime.now(timezone.utc)
+            expires_at = issued_at + timedelta(minutes=hold_minutes)
+            payment_expires_at = (
+                issued_at + timedelta(minutes=30)
+                if provider_amount > 0 and provider_name == "mercado_pago" else expires_at
+            )
             hold_values = {
                 **base,
                 "user_id": user_id,
@@ -351,11 +358,11 @@ def create_checkout_record(
                 insert into public.booking_holds (
                   user_id, arena_id, court_id, sport_id, customer_name, customer_phone,
                   start_at, end_at, court_price_total, booking_amount, amount_due_at_venue,
-                  currency, idempotency_key, expires_at
+                  currency, idempotency_key, expires_at, created_at
                 ) values (
                   :user_id, :arena_id, :court_id, :sport_id, :customer_name, :customer_phone,
                   :start_at, :end_at, :court_price_total, :booking_amount, :amount_due_at_venue,
-                  :currency, :idempotency_key, :expires_at
+                  :currency, :idempotency_key, :expires_at, now()
                 ) returning id
             """), hold_values).mappings().one())
             provider = "wallet" if provider_amount == 0 else provider_name
@@ -365,18 +372,19 @@ def create_checkout_record(
                 insert into public.payments (
                   hold_id, user_id, provider, amount, wallet_amount, provider_amount,
                   use_wallet_balance, wallet_debited, payment_method,
-                  currency, status, idempotency_key, paid_at, expires_at, pix_expires_at
+                  currency, status, idempotency_key, paid_at, expires_at, pix_expires_at, created_at
                 ) values (
                   :hold_id, :user_id, :provider, :amount, :wallet_amount, :provider_amount,
                   :use_wallet_balance, :wallet_debited, :payment_method,
                   'BRL', :status, :idempotency_key,
                   case when :status = 'paid' then timezone('utc', now()) else null end,
-                  :expires_at,
-                  case when :payment_method = 'pix' then timezone('utc', now()) + interval '30 minutes' else null end
+                  :payment_expires_at,
+                  case when :payment_method = 'pix' then now() + interval '30 minutes' else null end,
+                  now()
                 ) returning id as payment_id, hold_id, reservation_id, provider,
                             provider_payment_id, amount, wallet_amount, provider_amount,
                             use_wallet_balance, wallet_debited, payment_method,
-                            currency, status, checkout_url, expires_at, pix_expires_at
+                            currency, status, checkout_url, expires_at, pix_expires_at, created_at
             """), {
                 "hold_id": hold["id"], "user_id": user_id, "provider": provider,
                 "amount": advance, "wallet_amount": wallet_amount,
@@ -384,7 +392,7 @@ def create_checkout_record(
                 "wallet_debited": provider_amount == 0,
                 "payment_method": "wallet" if provider_amount == 0 else "pix" if provider == "mercado_pago" else "sandbox",
                 "status": payment_status, "idempotency_key": idempotency_key,
-                "expires_at": expires_at,
+                "payment_expires_at": payment_expires_at,
             }).mappings().one())
 
             if wallet_amount > 0 and provider_amount == 0:
@@ -411,7 +419,7 @@ def create_checkout_record(
             if wallet_amount > 0 and provider_amount == 0:
                 logger.info("wallet.debit payment_id=%s", payment["payment_id"])
             logger.info("payment.created payment_id=%s provider=%s", payment["payment_id"], provider)
-            return _payment_response(payment, hold_values), True
+            return _payment_response(payment, {**hold_values, "hold_expires_at": expires_at}), True
     except IntegrityError as exc:
         raise CheckoutSlotUnavailableError from exc
 
@@ -499,7 +507,8 @@ def get_player_payment(user_id: str, payment_id: UUID) -> dict[str, Any]:
                    p.amount, p.wallet_amount, p.provider_amount, p.use_wallet_balance,
                    p.wallet_debited, p.payment_method, p.currency,
                    case when p.status = 'pending' and h.status = 'expired' then 'expired' else p.status end as status,
-                   p.checkout_url, p.expires_at, p.pix_expires_at, h.arena_id, a.name as arena_name, a.logo_path,
+                   p.checkout_url, p.expires_at, p.pix_expires_at, p.created_at,
+                   h.expires_at as hold_expires_at, h.arena_id, a.name as arena_name, a.logo_path,
                    h.court_id, c.name as court_name, h.sport_id, s.name as sport_name,
                    h.start_at, h.end_at, h.court_price_total, h.booking_amount, h.amount_due_at_venue
             from public.payments p join public.booking_holds h on h.id = p.hold_id
@@ -550,7 +559,7 @@ def process_provider_event(provider: str, event: ProviderWebhookEvent, raw_paylo
                    h.arena_id, h.court_id, h.sport_id, h.customer_name, h.customer_phone,
                    h.start_at, h.end_at, h.court_price_total, h.booking_amount,
                    h.amount_due_at_venue, h.status as hold_status,
-                   h.expires_at <= timezone('utc', now()) as hold_expired
+                   h.expires_at <= now() as hold_expired
             from public.payments p join public.booking_holds h on h.id = p.hold_id
             where p.provider = :provider
               and (
@@ -715,7 +724,7 @@ def get_admin_payments(days: int, limit: int = 100) -> dict[str, Any]:
                      count(*) filter (where status='paid') as paid,
                      count(*) filter (where status='failed') as failed,
                      count(*) filter (where status='pending') as pending,
-                     count(*) filter (where status='pending' and expires_at <= timezone('utc', now())) as pending_stale,
+                     count(*) filter (where status='pending' and expires_at <= now()) as pending_stale,
                      (select coalesce(sum(amount),0) from public.wallet_transactions
                        where type='refund_credit' and created_at >= timezone('utc', now()) - make_interval(days => :days)) as credits
               from filtered
@@ -755,11 +764,12 @@ def get_admin_payment_for_reconciliation(payment_id: UUID) -> dict[str, Any]:
     factory = get_session_factory()
     with factory() as session:
         row = session.execute(text("""
-            select id as payment_id, provider, provider_payment_id, amount,
-                   wallet_amount, provider_amount, currency,
-                   status, reservation_id, expires_at
-            from public.payments
-            where id = :payment_id
+            select p.id as payment_id, p.provider, p.provider_payment_id, p.amount,
+                   p.wallet_amount, p.provider_amount, p.currency,
+                   p.status, p.reservation_id, p.expires_at, p.created_at,
+                   h.expires_at as hold_expires_at
+            from public.payments p join public.booking_holds h on h.id = p.hold_id
+            where p.id = :payment_id
         """), {"payment_id": payment_id}).mappings().one_or_none()
         if row is None:
             raise CheckoutNotFoundError

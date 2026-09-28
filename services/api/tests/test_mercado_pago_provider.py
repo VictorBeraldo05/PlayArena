@@ -305,10 +305,13 @@ def test_create_order_rejects_wrong_payment_method() -> None:
     ("provider_status", "status_detail", "expected"),
     [
         ("created", "created", "pending"),
+        ("action_required", "waiting_transfer", "pending"),
         ("processing", "in_process", "pending"),
+        ("temporarily_unknown", "reviewing", "pending"),
         ("failed", "high_risk", "failed"),
         ("canceled", "canceled", "cancelled"),
         ("expired", "expired", "expired"),
+        ("canceled", "expired", "expired"),
         ("processed", "accredited", "paid"),
         ("processed", "refunded", "cancelled"),
     ],
@@ -588,6 +591,11 @@ def test_real_order_webhook_rejects_missing_query_or_invalid_headers(
         payment_service,
         "_configured_provider",
         lambda: provider(lambda _request: pytest.fail("GET must not run")),
+    )
+    monkeypatch.setattr(
+        payment_service,
+        "process_provider_event",
+        lambda *_args: pytest.fail("invalid webhook must not change payment status"),
     )
     body, signature, request_id = signed_webhook(include_event_id=False, secret=secret)
     request_headers = {}
