@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.health import router as health_router
 from app.core.config import settings
+from app.core.secret_fingerprint import fingerprint_secret
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,15 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info("CORS allowed origins: %s", settings.allowed_web_origins)
+    if (
+        settings.payment_environment == "test"
+        and settings.payment_debug_secret_fingerprint
+        and settings.mercado_pago_webhook_secret
+    ):
+        logger.warning(
+            "mercado_pago.webhook_secret_fingerprint=%s",
+            fingerprint_secret(settings.mercado_pago_webhook_secret),
+        )
     yield
 
 

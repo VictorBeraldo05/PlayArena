@@ -51,13 +51,18 @@ def _sandbox_provider() -> SandboxPaymentProvider:
 
 
 def _mercado_pago_provider() -> MercadoPagoProvider:
-    if not settings.payment_sandbox_enabled or settings.payment_provider != "mercado_pago":
+    if (
+        settings.payment_provider != "mercado_pago"
+        or settings.payment_sandbox_enabled != (settings.payment_environment == "test")
+    ):
         raise PaymentConfigurationError("O checkout Mercado Pago não está disponível.", "provider_unavailable")
     try:
         return MercadoPagoProvider(
             access_token=settings.mercado_pago_access_token or "",
             webhook_secret=settings.mercado_pago_webhook_secret or "",
-            test_seller_id=settings.mercado_pago_test_seller_id or "",
+            payment_environment=settings.payment_environment,
+            test_seller_id=settings.mercado_pago_test_seller_id,
+            live_seller_id=settings.mercado_pago_live_seller_id,
             timeout_seconds=settings.mercado_pago_http_timeout_seconds,
         )
     except PaymentProviderError as exc:
@@ -78,7 +83,7 @@ def _pix_expires_at(hold_expires_at: datetime) -> datetime:
 
 def create_checkout(user_id: str, data: dict, payer_email: str | None = None) -> dict:
     payment_method = data["payment_method"]
-    provider_name = settings.payment_provider if settings.payment_provider_available else None
+    provider_name = settings.payment_provider if settings.payment_provider_available_for_user(user_id) else None
 
     checkout, created = create_checkout_record(
         user_id=user_id,
@@ -96,6 +101,14 @@ def create_checkout(user_id: str, data: dict, payer_email: str | None = None) ->
     )
     if checkout["provider"] == "wallet":
         return checkout
+    if (
+        settings.payment_environment == "production"
+        and checkout["provider"] == "mercado_pago"
+        and not settings.payment_provider_available_for_user(user_id)
+    ):
+        if not created and checkout.get("provider_payment_id"):
+            return get_player_payment_status(user_id, checkout["payment_id"])
+        raise PaymentConfigurationError("O Pix real esta desabilitado para esta conta.", "production_payment_test_disabled")
     if not created and checkout["status"] != "pending":
         return checkout
     if not created and checkout.get("provider_payment_id"):

@@ -41,6 +41,7 @@ def order_payload(
         "total_amount": amount,
         "currency": currency,
         "country_code": "BRA",
+        "live_mode": False,
         "user_id": 123456,
         "external_reference": external_reference,
         "transactions": {"payments": [{
@@ -70,6 +71,18 @@ def provider(handler) -> MercadoPagoProvider:
         webhook_secret=WEBHOOK_SECRET,
         test_seller_id="123456",
         transport=httpx.MockTransport(guarded_handler),
+        sleeper=lambda _seconds: None,
+    )
+
+
+def production_provider(handler, *, live_seller_id: str | None = None) -> MercadoPagoProvider:
+    return MercadoPagoProvider(
+        access_token="APP_USR_LIVE_ONLY",
+        webhook_secret=WEBHOOK_SECRET,
+        payment_environment="production",
+        test_seller_id="999999",
+        live_seller_id=live_seller_id,
+        transport=httpx.MockTransport(handler),
         sleeper=lambda _seconds: None,
     )
 
@@ -135,6 +148,124 @@ def test_create_order_uses_backend_values_idempotency_and_transparent_pix() -> N
     assert result.checkout_url is None
     assert result.instructions and result.instructions.copy_paste == "000201-pix-code"
     assert result.instructions.amount == Decimal("5.00")
+
+
+def test_production_create_accepts_live_order_without_using_test_seller() -> None:
+    paths = []
+    payload = order_payload()
+    payload["id"] = "LIVEORDER01"
+    payload["live_mode"] = True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        assert request.headers["authorization"] == "Bearer APP_USR_LIVE_ONLY"
+        return httpx.Response(201, json=payload)
+
+    result = production_provider(handler).create_payment(
+        payment_id=PAYMENT_ID,
+        amount=Decimal("5.00"),
+        currency="BRL",
+        expires_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+        idempotency_key="checkout_1234567890abcdef",
+        payer_email="real-player@example.com",
+    )
+    assert result.provider_payment_id == "LIVEORDER01"
+    assert paths == ["/v1/orders"]
+
+
+@pytest.mark.parametrize("environment", ["test", "production"])
+def test_order_rejects_opposite_live_mode(environment: str) -> None:
+    payload = order_payload()
+    payload["live_mode"] = environment == "test"
+    adapter = provider if environment == "test" else production_provider
+    with pytest.raises(PaymentProviderError) as error:
+        adapter(lambda _request: httpx.Response(200, json=payload)).get_payment(ORDER_ID)
+    assert error.value.code == "payment_environment_mismatch"
+
+
+def test_test_order_without_explicit_live_mode_fails_closed() -> None:
+    payload = order_payload()
+    payload.pop("live_mode")
+    with pytest.raises(PaymentProviderError) as error:
+        provider(lambda _request: httpx.Response(200, json=payload)).get_payment(ORDER_ID)
+    assert error.value.code == "payment_environment_mismatch"
+
+
+def test_production_order_without_live_mode_is_accepted() -> None:
+    payload = order_payload(status="processed", status_detail="accredited")
+    payload.pop("live_mode")
+    state = production_provider(
+        lambda _request: httpx.Response(200, json=payload), live_seller_id="123456"
+    ).get_payment(ORDER_ID)
+    assert state.status == "paid"
+    assert state.amount == Decimal("5.00")
+    assert state.currency == "BRL"
+    assert state.external_reference == PAYMENT_ID
+
+
+def test_production_create_without_live_mode_keeps_order_checks() -> None:
+    payload = order_payload()
+    payload.pop("live_mode")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/users/me":
+            return httpx.Response(200, json={"id": 123456})
+        assert request.url.path == "/v1/orders"
+        return httpx.Response(201, json=payload)
+
+    result = production_provider(handler, live_seller_id="123456").create_payment(
+        payment_id=PAYMENT_ID,
+        amount=Decimal("5.00"),
+        currency="BRL",
+        expires_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+        idempotency_key="checkout_1234567890abcdef",
+        payer_email="real-player@example.com",
+    )
+    assert result.provider_payment_id == ORDER_ID
+    assert result.instructions and result.instructions.amount == Decimal("5.00")
+
+
+@pytest.mark.parametrize("order_has_live_mode", [True, False])
+def test_production_get_and_webhook_require_live_mode_and_optional_live_seller(
+    order_has_live_mode: bool,
+) -> None:
+    payload = order_payload(status="processed", status_detail="accredited")
+    if order_has_live_mode:
+        payload["live_mode"] = True
+    else:
+        payload.pop("live_mode")
+    body, signature, request_id = signed_webhook(live_mode=True)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == f"/v1/orders/{ORDER_ID}"
+        return httpx.Response(200, json=payload)
+
+    adapter = production_provider(handler, live_seller_id="123456")
+    assert adapter.get_payment(ORDER_ID).status == "paid"
+    event = adapter.verify_webhook(
+        body, signature, request_id=request_id, data_id=ORDER_ID, topic="order"
+    )
+    assert event.status == "paid"
+    assert event.external_reference == PAYMENT_ID
+
+
+@pytest.mark.parametrize("invalid_live_mode", [False, None, "true"])
+def test_production_rejects_invalid_live_mode_when_present(invalid_live_mode: object) -> None:
+    payload = order_payload()
+    payload["live_mode"] = invalid_live_mode
+    with pytest.raises(PaymentProviderError) as error:
+        production_provider(lambda _request: httpx.Response(200, json=payload)).get_payment(ORDER_ID)
+    assert error.value.code == "payment_environment_mismatch"
+
+
+def test_production_live_seller_mismatch_is_rejected() -> None:
+    payload = order_payload()
+    payload["live_mode"] = True
+    with pytest.raises(PaymentProviderError) as error:
+        production_provider(
+            lambda _request: httpx.Response(200, json=payload), live_seller_id="999999"
+        ).get_payment(ORDER_ID)
+    assert error.value.code == "payment_environment_mismatch"
 
 
 def test_get_order_uses_authenticated_orders_endpoint() -> None:
@@ -242,7 +373,7 @@ def test_production_webhook_is_explicitly_blocked() -> None:
             topic="order",
         )
 
-    assert error.value.code == "production_payment_blocked"
+    assert error.value.code == "payment_environment_mismatch"
 
 
 def test_create_order_rejects_non_test_order() -> None:
@@ -259,7 +390,7 @@ def test_create_order_rejects_non_test_order() -> None:
             payer_email="buyer@testuser.com",
         )
 
-    assert error.value.code == "production_payment_blocked"
+    assert error.value.code == "payment_environment_mismatch"
     assert error.value.indeterminate
 
 
@@ -285,7 +416,7 @@ def test_wrong_seller_credential_is_blocked_before_pix_creation() -> None:
             idempotency_key="checkout_1234567890abcdef",
             payer_email="buyer@testuser.com",
         )
-    assert error.value.code == "production_payment_blocked"
+    assert error.value.code == "seller_mismatch"
     assert calls == ["/users/me"]
 
 
@@ -332,6 +463,17 @@ def test_order_uses_brazil_country_when_currency_is_omitted() -> None:
     payload = order_payload()
     payload.pop("currency")
     state = provider(lambda _request: httpx.Response(200, json=payload)).get_payment(ORDER_ID)
+    assert state.currency == "BRL"
+
+
+def test_order_accepts_brazil_two_letter_country_code_without_currency() -> None:
+    payload = order_payload()
+    payload["live_mode"] = True
+    payload["country_code"] = "BR"
+    payload.pop("currency")
+    state = production_provider(
+        lambda _request: httpx.Response(200, json=payload)
+    ).get_payment(ORDER_ID)
     assert state.currency == "BRL"
 
 
@@ -607,7 +749,7 @@ def test_transient_create_order_response_retries_once(status_code: int) -> None:
     assert error.value.indeterminate
 
 
-def test_mercado_pago_config_rejects_production_and_contradictory_flags() -> None:
+def test_mercado_pago_config_separates_production_from_test() -> None:
     common = {
         "_env_file": None,
         "PAYMENT_PROVIDER": "mercado_pago",
@@ -617,8 +759,28 @@ def test_mercado_pago_config_rejects_production_and_contradictory_flags() -> Non
         "MERCADO_PAGO_TEST_SELLER_ID": "123456",
         "FRONTEND_URL": "https://useplayarena.com.br",
     }
-    with pytest.raises(ValidationError, match="Production payments are blocked"):
+    production = Settings(
+        **{**common, "PAYMENT_SANDBOX_ENABLED": False}, PAYMENT_ENV="production"
+    )
+    assert not production.payment_provider_available
+    assert production.mercado_pago_test_seller_id == "123456"
+    assert production.mercado_pago_live_seller_id is None
+    enabled = Settings(
+        **{**common, "PAYMENT_SANDBOX_ENABLED": False},
+        PAYMENT_ENV="production",
+        PAYMENT_PRODUCTION_TEST_ENABLED=True,
+    )
+    assert enabled.payment_provider_available
+    assert enabled.payment_provider_available_for_user("any-player")
+    with pytest.raises(ValidationError, match="PAYMENT_SANDBOX_ENABLED=false"):
         Settings(**common, PAYMENT_ENV="production")
+    with pytest.raises(ValidationError, match="BOOKING_ADVANCE_AMOUNT=5.00"):
+        Settings(
+            **{**common, "PAYMENT_SANDBOX_ENABLED": False},
+            PAYMENT_ENV="production",
+            PAYMENT_PRODUCTION_TEST_ENABLED=True,
+            BOOKING_ADVANCE_AMOUNT="6.00",
+        )
     with pytest.raises(ValidationError, match="PAYMENT_SANDBOX_ENABLED=true"):
         Settings(**{**common, "PAYMENT_SANDBOX_ENABLED": False}, PAYMENT_ENV="test")
     with pytest.raises(ValidationError, match="MERCADO_PAGO_TEST_SELLER_ID"):
@@ -626,7 +788,7 @@ def test_mercado_pago_config_rejects_production_and_contradictory_flags() -> Non
 
 
 def test_internal_sandbox_is_also_blocked_in_production() -> None:
-    with pytest.raises(ValidationError, match="Production payments are blocked"):
+    with pytest.raises(ValidationError, match="PAYMENT_ENV=test"):
         Settings(
             _env_file=None,
             PAYMENT_PROVIDER="sandbox",

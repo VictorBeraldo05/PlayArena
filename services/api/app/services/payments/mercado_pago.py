@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from mercadopago.webhook import InvalidWebhookSignatureError, WebhookSignatureValidator
@@ -28,7 +28,7 @@ PIX_EXPIRATION = "PT30M"
 
 
 class MercadoPagoProvider:
-    """Transparent Pix Orders adapter locked to PlayArena's test environment."""
+    """Transparent Pix Orders adapter for test and production credentials."""
 
     name = "mercado_pago"
 
@@ -37,7 +37,9 @@ class MercadoPagoProvider:
         *,
         access_token: str,
         webhook_secret: str,
-        test_seller_id: str,
+        payment_environment: Literal["test", "production"] = "test",
+        test_seller_id: str | None = None,
+        live_seller_id: str | None = None,
         timeout_seconds: float = 5.0,
         transport: httpx.BaseTransport | None = None,
         sleeper: Callable[[float], None] = time.sleep,
@@ -46,11 +48,14 @@ class MercadoPagoProvider:
             raise PaymentProviderError("Mercado Pago access token is not configured.")
         if not webhook_secret:
             raise PaymentProviderError("Mercado Pago webhook secret is not configured.")
-        if not test_seller_id:
+        if payment_environment not in {"test", "production"}:
+            raise PaymentProviderError("Invalid Mercado Pago payment environment.")
+        if payment_environment == "test" and not test_seller_id:
             raise PaymentProviderError("Mercado Pago test seller id is not configured.")
         self._access_token = access_token
         self._webhook_secret = webhook_secret
-        self._test_seller_id = test_seller_id
+        self._payment_environment = payment_environment
+        self._seller_id = test_seller_id if payment_environment == "test" else live_seller_id
         self._timeout = httpx.Timeout(timeout_seconds)
         self._transport = transport
         self._sleeper = sleeper
@@ -71,7 +76,7 @@ class MercadoPagoProvider:
             raise PaymentProviderError("Mercado Pago order requires a positive BRL amount.")
         if not payer_email:
             raise PaymentProviderError("Pix requires the authenticated payer email.")
-        self._verify_test_seller()
+        self._verify_seller_credentials()
         payload: dict[str, Any] = {
             "type": "online",
             "processing_mode": "automatic",
@@ -97,7 +102,7 @@ class MercadoPagoProvider:
             idempotency_key=idempotency_key,
             indeterminate_on_failure=True,
         )
-        self._require_test_response(data, indeterminate=True)
+        self._require_environment_response(data, indeterminate=True)
         state = self._parse_order(data)
         if state.external_reference != payment_id:
             raise PaymentProviderError(
@@ -132,19 +137,21 @@ class MercadoPagoProvider:
         )
         return ProviderPayment(state.provider_payment_id, None, state.instructions)
 
-    def _verify_test_seller(self) -> None:
+    def _verify_seller_credentials(self) -> None:
+        if not self._seller_id:
+            return
         account = self._request_json("GET", "https://api.mercadolibre.com/users/me")
-        if str(account.get("id")) != self._test_seller_id:
+        if str(account.get("id")) != self._seller_id:
             raise PaymentProviderError(
-                "Mercado Pago credential does not belong to the configured test seller.",
-                code="production_payment_blocked",
+                "Mercado Pago credential does not belong to the configured seller.",
+                code="seller_mismatch",
             )
 
     def get_payment(self, provider_payment_id: str) -> ProviderPaymentState:
         if not provider_payment_id or "/" in provider_payment_id:
             raise PaymentProviderError("Invalid Mercado Pago order id.")
         data = self._request_json("GET", f"/v1/orders/{provider_payment_id}")
-        self._require_test_response(data)
+        self._require_environment_response(data)
         state = self._parse_order(data)
         if state.provider_payment_id != provider_payment_id:
             raise PaymentProviderError(
@@ -186,11 +193,14 @@ class MercadoPagoProvider:
                 raise ValueError("data.id")
             if body.get("type") != "order":
                 raise ValueError("type")
-            if body.get("live_mode") is not False or str(body.get("user_id")) != self._test_seller_id:
-                logger.warning("mercado_pago.webhook.rejected reason=production_payment_blocked")
+            if (
+                body.get("live_mode") is not (self._payment_environment == "production")
+                or (self._seller_id and str(body.get("user_id")) != self._seller_id)
+            ):
+                logger.warning("mercado_pago.webhook.rejected reason=payment_environment_mismatch")
                 raise PaymentProviderError(
-                    "Production Mercado Pago webhook is blocked.",
-                    code="production_payment_blocked",
+                    "Mercado Pago webhook does not match the configured environment or seller.",
+                    code="payment_environment_mismatch",
                 )
         except PaymentProviderError:
             raise
@@ -292,10 +302,10 @@ class MercadoPagoProvider:
                 raise ValueError("transaction amount")
             payment_method = payment.get("payment_method")
             country = data.get("country_code")
-            if country is not None and country != "BRA":
+            if country is not None and country not in {"BR", "BRA"}:
                 raise ValueError("country_code")
             raw_currency = data.get("currency") or data.get("currency_id") or payment.get("currency_id")
-            if raw_currency is None and country != "BRA":
+            if raw_currency is None and country not in {"BR", "BRA"}:
                 raise ValueError("currency")
             currency = str(raw_currency or "BRL")
             external_reference = str(data["external_reference"])
@@ -343,15 +353,19 @@ class MercadoPagoProvider:
             payment_method=payment_method.get("id") if isinstance(payment_method, dict) else None,
         )
 
-    def _require_test_response(self, data: dict[str, Any], *, indeterminate: bool = False) -> None:
+    def _require_environment_response(self, data: dict[str, Any], *, indeterminate: bool = False) -> None:
+        expected_live_mode = self._payment_environment == "production"
+        has_live_mode = "live_mode" in data
         if (
-            data.get("live_mode") is True
-            or str(data.get("user_id")) != self._test_seller_id
-            or not str(data.get("id", "")).startswith("ORD")
+            (has_live_mode and data["live_mode"] is not expected_live_mode)
+            or (not has_live_mode and not expected_live_mode)
+            or (self._seller_id and str(data.get("user_id")) != self._seller_id)
+            or not data.get("id")
+            or (self._payment_environment == "test" and not str(data["id"]).startswith("ORD"))
         ):
             raise PaymentProviderError(
-                "Production Mercado Pago orders are blocked.",
-                code="production_payment_blocked",
+                "Mercado Pago order does not match the configured environment or seller.",
+                code="payment_environment_mismatch",
                 indeterminate=indeterminate,
             )
 

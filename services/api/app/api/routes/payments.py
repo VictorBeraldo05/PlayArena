@@ -99,7 +99,7 @@ def checkout_quote(
             settings.booking_advance_amount,
             use_wallet_balance=use_wallet_balance,
         )
-        provider_available = settings.payment_provider_available
+        provider_available = settings.payment_provider_available_for_user(current_user.id)
         return {
             **quote,
             "provider_available": provider_available,

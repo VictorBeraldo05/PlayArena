@@ -3,8 +3,9 @@ import json
 from decimal import Decimal
 from typing import Literal
 from urllib.parse import urlparse
+from uuid import UUID
 
-from pydantic import Field, PositiveInt, model_validator
+from pydantic import Field, PositiveInt, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_WEB_ORIGINS = (
@@ -79,11 +80,17 @@ class Settings(BaseSettings):
     payment_hold_minutes: PositiveInt = Field(default=10, alias="PAYMENT_HOLD_MINUTES")
     payment_provider: Literal["disabled", "sandbox", "mercado_pago"] = Field(default="disabled", alias="PAYMENT_PROVIDER")
     payment_environment: Literal["test", "production"] = Field(default="test", alias="PAYMENT_ENV")
+    payment_production_test_enabled: bool = Field(default=False, alias="PAYMENT_PRODUCTION_TEST_ENABLED")
+    payment_production_test_allowed_user_id: UUID | None = Field(
+        default=None, alias="PAYMENT_PRODUCTION_TEST_ALLOWED_USER_ID"
+    )
+    payment_debug_secret_fingerprint: bool = Field(default=False, alias="PAYMENT_DEBUG_SECRET_FINGERPRINT")
     payment_sandbox_enabled: bool = Field(default=False, alias="PAYMENT_SANDBOX_ENABLED")
     payment_webhook_secret: str | None = Field(default=None, alias="PAYMENT_WEBHOOK_SECRET")
     mercado_pago_access_token: str | None = Field(default=None, alias="MERCADO_PAGO_ACCESS_TOKEN")
     mercado_pago_webhook_secret: str | None = Field(default=None, alias="MERCADO_PAGO_WEBHOOK_SECRET")
     mercado_pago_test_seller_id: str | None = Field(default=None, alias="MERCADO_PAGO_TEST_SELLER_ID")
+    mercado_pago_live_seller_id: str | None = Field(default=None, alias="MERCADO_PAGO_LIVE_SELLER_ID")
     mercado_pago_http_timeout_seconds: PositiveInt = Field(default=5, alias="MERCADO_PAGO_HTTP_TIMEOUT_SECONDS")
 
     model_config = SettingsConfigDict(
@@ -97,9 +104,25 @@ class Settings(BaseSettings):
     def allowed_web_origins(self) -> list[str]:
         return parse_web_origins(self.web_origins if self.web_origins is not None else self.web_origin)
 
+    @field_validator("payment_production_test_allowed_user_id", mode="before")
+    @classmethod
+    def empty_allowed_user_id_is_unset(cls, value: object) -> object:
+        return None if value == "" else value
+
     @property
     def payment_provider_available(self) -> bool:
-        return self.payment_provider != "disabled" and self.payment_sandbox_enabled
+        if self.payment_provider == "disabled":
+            return False
+        if self.payment_environment == "test":
+            return self.payment_sandbox_enabled
+        return self.payment_provider == "mercado_pago" and self.payment_production_test_enabled
+
+    def payment_provider_available_for_user(self, user_id: str) -> bool:
+        if not self.payment_provider_available:
+            return False
+        if self.payment_environment == "production" and self.payment_production_test_allowed_user_id:
+            return user_id == str(self.payment_production_test_allowed_user_id)
+        return True
 
     @property
     def effective_payment_hold_minutes(self) -> int:
@@ -111,17 +134,23 @@ class Settings(BaseSettings):
             if self.payment_sandbox_enabled:
                 raise ValueError("PAYMENT_SANDBOX_ENABLED must be false when PAYMENT_PROVIDER is disabled.")
             return self
-        if not self.payment_sandbox_enabled:
-            raise ValueError("PAYMENT_SANDBOX_ENABLED=true is required for non-production payment providers.")
-        if self.payment_environment != "test":
-            raise ValueError("Production payments are blocked in this release.")
-        if self.payment_provider == "sandbox" and not self.payment_webhook_secret:
-            raise ValueError("PAYMENT_WEBHOOK_SECRET is required for the sandbox provider.")
+        if self.payment_provider == "sandbox":
+            if self.payment_environment != "test" or not self.payment_sandbox_enabled:
+                raise ValueError("The sandbox provider requires PAYMENT_ENV=test and PAYMENT_SANDBOX_ENABLED=true.")
+            if not self.payment_webhook_secret:
+                raise ValueError("PAYMENT_WEBHOOK_SECRET is required for the sandbox provider.")
         if self.payment_provider == "mercado_pago":
-            if not self.mercado_pago_access_token or not self.mercado_pago_webhook_secret or not self.mercado_pago_test_seller_id:
+            if not self.mercado_pago_access_token or not self.mercado_pago_webhook_secret:
+                raise ValueError("MERCADO_PAGO_ACCESS_TOKEN and MERCADO_PAGO_WEBHOOK_SECRET are required.")
+            if self.payment_environment == "test" and (not self.payment_sandbox_enabled or not self.mercado_pago_test_seller_id):
                 raise ValueError(
-                    "MERCADO_PAGO_ACCESS_TOKEN, MERCADO_PAGO_WEBHOOK_SECRET and MERCADO_PAGO_TEST_SELLER_ID are required."
+                    "Test Mercado Pago requires PAYMENT_SANDBOX_ENABLED=true and MERCADO_PAGO_TEST_SELLER_ID."
                 )
+            if self.payment_environment == "production":
+                if self.payment_sandbox_enabled:
+                    raise ValueError("Production Mercado Pago requires PAYMENT_SANDBOX_ENABLED=false.")
+                if self.payment_production_test_enabled and self.booking_advance_amount != Decimal("5.00"):
+                    raise ValueError("Production Pix testing requires BOOKING_ADVANCE_AMOUNT=5.00.")
         return self
 
 
