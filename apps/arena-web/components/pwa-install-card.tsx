@@ -37,17 +37,12 @@ export function PwaInstallCard() {
   }
 
   return <>
-    <section aria-labelledby="pwa-install-title" className="mt-5 overflow-hidden rounded-[18px] border border-white/[.09] bg-[linear-gradient(135deg,rgba(143,255,60,.09),transparent_58%),#111923] p-5">
-      <div className="flex items-start gap-3">
-        <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-[#8FFF3C]/25 bg-[#8FFF3C]/10 text-[#8FFF3C]"><InstallIcon /></span>
-        <div className="min-w-0">
-          <h2 className="text-sm font-extrabold text-white" id="pwa-install-title">Instale o PlayArena</h2>
-          <p className="mt-1 text-sm leading-5 text-[#9DA7B3]">Acesse suas reservas mais rápido pela tela inicial do seu celular.</p>
-        </div>
-      </div>
-      <button className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-[13px] border border-[#8FFF3C]/35 bg-[#8FFF3C]/10 px-4 text-sm font-extrabold text-[#DFFFC9] transition-colors active:bg-[#8FFF3C]/18 disabled:cursor-not-allowed disabled:opacity-60" disabled={isInstalling} onClick={() => void handleInstall()} type="button">
-        <span>{isInstalling ? 'Abrindo instalação...' : 'Instalar app'}</span>
-        <ArrowIcon />
+    <section aria-labelledby="pwa-install-title" className="mt-7">
+      <h2 className="text-[11px] font-extrabold uppercase tracking-[.2em] text-[#9DA7B3]" id="pwa-install-title">Conta</h2>
+      <button className="mt-3 flex min-h-[68px] w-full items-center gap-3 border-y border-white/[.08] py-2.5 text-left transition-colors hover:bg-white/[.025] focus-visible:outline-2 focus-visible:outline-[#8FFF3C] disabled:cursor-not-allowed disabled:opacity-60" disabled={isInstalling} onClick={() => void handleInstall()} type="button">
+        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#8FFF3C]/10 text-[#8FFF3C]"><InstallIcon /></span>
+        <span className="min-w-0 flex-1"><strong className="block text-[13px] font-bold text-white">{isInstalling ? 'Abrindo instalação...' : 'Instalar PlayArena'}</strong><small className="mt-0.5 block text-[11px] text-[#9DA7B3]">Acesse mais rápido pela tela inicial</small></span>
+        <span className="text-[#9DA7B3]"><ArrowIcon /></span>
       </button>
     </section>
     {showIOSInstructions ? <IOSInstallSheet onClose={() => setShowIOSInstructions(false)} /> : null}
