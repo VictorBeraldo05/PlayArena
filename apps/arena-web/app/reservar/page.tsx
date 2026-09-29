@@ -749,18 +749,13 @@ function ArenaSummary({
 
 function FeeExplanation({ amount }: { amount: string | number }) {
   return (
-    <section className="flex items-start gap-2.5 border-l-2 border-[#8FFF3C]/70 py-1 pl-3">
-      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-[#8FFF3C]/10 text-[#8FFF3C]">
-        <ShieldIcon />
-      </span>
-      <div className="min-w-0">
-        <h2 className="text-[13px] font-extrabold leading-5">
-          {formatCurrencyBRL(amount)} para solicitar a reserva
-        </h2>
-        <p className="mt-0.5 text-[11px] leading-[1.4] text-[#9DA7B3]">
-          Confirmou? Descontamos do valor na arena. Recusou? O valor volta ao seu Saldo PlayArena.
-        </p>
-      </div>
+    <section className="px-1 py-0.5">
+      <h2 className="text-[13px] font-bold leading-5">
+        <span className="text-[#8FFF3C]">{formatCurrencyBRL(amount)}</span> para reservar
+      </h2>
+      <p className="mt-1 text-[11px] leading-[1.45] text-[#9DA7B3]">
+        Descontamos esse valor na arena. Se não confirmarem sua reserva, ele volta para seu saldo.
+      </p>
     </section>
   );
 }
