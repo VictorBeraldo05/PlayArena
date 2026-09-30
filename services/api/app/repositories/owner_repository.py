@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.db.session import get_session_factory
 from app.repositories.payment_repository import credit_reservation_payment, expire_stale_holds, lock_booking_slot
+from app.services.arena_geocoding import geocode_arena_address
 
 
 class OwnerResourceNotFoundError(Exception):
@@ -35,7 +36,7 @@ def _owned_arena(session: Any, user_id: str, arena_id: UUID) -> dict[str, Any]:
         text(
             """
             select a.id, a.name, a.slug, a.description, a.phone, a.whatsapp,
-                   a.address, a.city, a.state, a.logo_path, a.active
+                   a.address, a.city, a.state, a.latitude, a.longitude, a.logo_path, a.active
             from public.arenas a
             join public.arena_owners ao on ao.arena_id = a.id
             where a.id = :arena_id and ao.user_id = :user_id
@@ -69,7 +70,7 @@ def list_arenas(user_id: str) -> list[dict[str, Any]]:
     return _rows(
         """
         select a.id, a.name, a.slug, a.description, a.phone, a.whatsapp,
-               a.address, a.city, a.state, a.logo_path, a.active
+               a.address, a.city, a.state, a.latitude, a.longitude, a.logo_path, a.active
         from public.arenas a
         join public.arena_owners ao on ao.arena_id = a.id
         where ao.user_id = :user_id
@@ -86,6 +87,14 @@ def get_arena(user_id: str, arena_id: UUID) -> dict[str, Any]:
 
 
 def update_arena(user_id: str, arena_id: UUID, changes: dict[str, Any]) -> dict[str, Any]:
+    existing = get_arena(user_id, arena_id)
+    if "latitude" not in changes and any(field in changes and changes[field] != existing[field] for field in ("address", "city", "state")):
+        coordinates = geocode_arena_address(
+            changes.get("address", existing["address"]),
+            changes.get("city", existing["city"]),
+            changes.get("state", existing["state"]),
+        )
+        changes = {**changes, "latitude": coordinates[0] if coordinates else None, "longitude": coordinates[1] if coordinates else None}
     session_factory = get_session_factory()
     with session_factory.begin() as session:
         _owned_arena(session, user_id, arena_id)

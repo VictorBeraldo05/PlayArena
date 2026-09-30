@@ -181,7 +181,7 @@ def test_public_catalog_types_optional_city_for_postgresql(monkeypatch) -> None:
     monkeypatch.setattr(booking_repository, "get_session_factory", lambda: lambda: session)
 
     assert booking_repository.public_arenas("Piracicaba") == []
-    assert session.params == {"city": "Piracicaba"}
+    assert session.params == {"city": "Piracicaba", "sport": None}
     assert "cast(:city as text) is null" in session.sql.lower()
     assert "a.logo_path" in session.sql.lower()
 

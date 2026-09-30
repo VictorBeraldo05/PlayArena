@@ -1,5 +1,6 @@
 import logging
 from datetime import date, datetime
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
@@ -35,6 +36,16 @@ from app.services.notifications import send_reservation_status_notification
 router = APIRouter(tags=["availability and reservations"])
 logger = logging.getLogger(__name__)
 
+Latitude = Annotated[float | None, Query(ge=-90, le=90)]
+Longitude = Annotated[float | None, Query(ge=-180, le=180)]
+
+
+def validate_location_sort(latitude: float | None, longitude: float | None, sort: str | None) -> None:
+    if (latitude is None) != (longitude is None):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Latitude and longitude must be provided together.")
+    if sort == "distance" and latitude is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Distance sort requires latitude and longitude.")
+
 
 def require_player(
     current_user: AuthenticatedUser = Depends(get_current_user),
@@ -46,9 +57,18 @@ def require_player(
     return current_user
 
 @router.get("/arenas")
-def get_public_arenas(city: str | None = None) -> list[dict]:
+def get_public_arenas(
+    city: str | None = Query(default=None, min_length=1, max_length=120),
+    sport: str | None = Query(default=None, min_length=1, max_length=120),
+    latitude: Latitude = None,
+    longitude: Longitude = None,
+    sort: Literal["distance", "price"] | None = None,
+) -> list[dict]:
+    validate_location_sort(latitude, longitude, sort)
     try:
-        return public_arenas(city)
+        if sport is None and latitude is None and sort is None:
+            return public_arenas(city)
+        return public_arenas(city, sport=sport, latitude=latitude, longitude=longitude, sort=sort)
     except Exception as exc:  # noqa: BLE001
         logger.exception("[PLAYER_CATALOG] failed type=%s", type(exc).__name__)
         raise
@@ -86,15 +106,22 @@ def get_availability(
     start_at: datetime = Query(),
     arena_id: UUID | None = None,
     court_id: UUID | None = None,
+    latitude: Latitude = None,
+    longitude: Longitude = None,
+    sort: Literal["distance", "price"] | None = None,
 ) -> list[dict]:
     enforce_rate_limit(request, scope="availability", limit=settings.availability_rate_limit_per_minute)
+    validate_location_sort(latitude, longitude, sort)
     try:
         if city is None and arena_id is None:
             raise ValueError("city or arena_id is required")
         validate_future_booking_start(start_at)
-        if arena_id is None and court_id is None:
+        if arena_id is None and court_id is None and latitude is None and sort is None:
             return available(city, sport, start_at)
-        return available(city, sport, start_at, arena_id=arena_id, court_id=court_id)
+        kwargs = {"arena_id": arena_id, "court_id": court_id}
+        if latitude is not None or sort is not None:
+            kwargs.update(latitude=latitude, longitude=longitude, sort=sort)
+        return available(city, sport, start_at, **kwargs)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 

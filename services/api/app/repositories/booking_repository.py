@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from app.db.session import get_session_factory
 from app.repositories.payment_repository import credit_reservation_payment
 from app.schemas.booking import SAO_PAULO_TIME_ZONE
+from app.services.arena_distance import distance_km
 
 
 class BookingConflictError(Exception):
@@ -34,7 +35,29 @@ class PlayerReservationCancellationConflictError(Exception):
     """Raised when the reservation changes while the cancellation is being applied."""
 
 
-def available(city: str | None, sport: str, start_at: datetime, arena_id: UUID | None = None, court_id: UUID | None = None) -> list[dict[str, Any]]:
+def _with_distances(rows: list[dict[str, Any]], latitude: float | None, longitude: float | None) -> list[dict[str, Any]]:
+    for row in rows:
+        arena_latitude = row.pop("latitude", None)
+        arena_longitude = row.pop("longitude", None)
+        if latitude is not None and longitude is not None and arena_latitude is not None and arena_longitude is not None:
+            row["distance_km"] = distance_km(latitude, longitude, float(arena_latitude), float(arena_longitude))
+    return rows
+
+
+def _sort_availability_by_arena(rows: list[dict[str, Any]], sort: str | None) -> list[dict[str, Any]]:
+    if sort not in {"distance", "price"}:
+        return rows
+    groups: dict[Any, list[dict[str, Any]]] = {}
+    for row in rows:
+        groups.setdefault(row["arena_id"], []).append(row)
+    if sort == "distance":
+        ranked = sorted(groups.values(), key=lambda group: (group[0].get("distance_km") is None, group[0].get("distance_km") or 0))
+    else:
+        ranked = sorted(groups.values(), key=lambda group: min(row["price"] for row in group))
+    return [row for group in ranked for row in group]
+
+
+def available(city: str | None, sport: str, start_at: datetime, arena_id: UUID | None = None, court_id: UUID | None = None, *, latitude: float | None = None, longitude: float | None = None, sort: str | None = None) -> list[dict[str, Any]]:
     """Return courts where the full default-duration slot is bookable.
 
     A pricing rule covers the whole slot. The narrowest matching range wins;
@@ -44,7 +67,7 @@ def available(city: str | None, sport: str, start_at: datetime, arena_id: UUID |
     with factory() as session:
         rows = session.execute(text("""
             with candidates as (
-              select a.id as arena_id, a.name as arena_name, a.logo_path, c.id as court_id,
+              select a.id as arena_id, a.name as arena_name, a.logo_path, a.latitude, a.longitude, c.id as court_id,
                      c.name as court_name, c.default_duration_minutes as duration_minutes, :start_at as start_at,
                      :start_at + make_interval(mins => c.default_duration_minutes) as end_at
               from public.arenas a join public.courts c on c.arena_id = a.id
@@ -81,14 +104,15 @@ def available(city: str | None, sport: str, start_at: datetime, arena_id: UUID |
                 and h.hold_window && tstzrange(ca.start_at, ca.end_at, '[)')
             )
         """), {"city": city, "sport": sport, "start_at": start_at, "arena_id": arena_id, "court_id": court_id}).mappings()
-        return [dict(row) for row in rows if row["price"] is not None]
+        options = [dict(row) for row in rows if row["price"] is not None]
+        return _sort_availability_by_arena(_with_distances(options, latitude, longitude), sort)
 
 
-def public_arenas(city: str | None = None) -> list[dict[str, Any]]:
+def public_arenas(city: str | None = None, *, sport: str | None = None, latitude: float | None = None, longitude: float | None = None, sort: str | None = None) -> list[dict[str, Any]]:
     factory = get_session_factory()
     with factory() as session:
         rows = session.execute(text("""
-            select a.id, a.name, a.city, a.description, a.logo_path,
+            select a.id, a.name, a.city, a.description, a.logo_path, a.latitude, a.longitude,
               (select count(*) from public.courts c where c.arena_id = a.id and c.active) as court_count,
               coalesce((
                 select array_agg(distinct s.name)
@@ -102,10 +126,22 @@ def public_arenas(city: str | None = None) -> list[dict[str, Any]]:
               ) as price_from
             from public.arenas a
             where a.active and (cast(:city as text) is null or lower(a.city) = lower(cast(:city as text)))
+              and (cast(:sport as text) is null or exists (
+                select 1 from public.courts sc
+                join public.court_sports cs on cs.court_id = sc.id
+                join public.sports s on s.id = cs.sport_id
+                where sc.arena_id = a.id and sc.active
+                  and (lower(s.name) = lower(cast(:sport as text)) or lower(s.slug) = lower(cast(:sport as text)))
+              ))
               and exists (select 1 from public.courts c where c.arena_id = a.id and c.active)
             order by a.name
-        """), {"city": city}).mappings()
-        return [dict(row) for row in rows]
+        """), {"city": city, "sport": sport}).mappings()
+        arenas = _with_distances([dict(row) for row in rows], latitude, longitude)
+        if sort == "distance":
+            arenas.sort(key=lambda arena: (arena.get("distance_km") is None, arena.get("distance_km") or 0))
+        elif sort == "price":
+            arenas.sort(key=lambda arena: (arena["price_from"] is None, arena["price_from"] or 0))
+        return arenas
 
 
 def public_arena(arena_id: UUID) -> dict[str, Any] | None:

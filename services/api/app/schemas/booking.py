@@ -26,6 +26,7 @@ class AvailabilityOption(BaseModel):
     end_at: datetime
     duration_minutes: int
     price: Decimal
+    distance_km: float | None = None
 
 
 class PublicArenaScheduleCourt(BaseModel):

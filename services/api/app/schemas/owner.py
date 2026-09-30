@@ -25,6 +25,8 @@ class ArenaResponse(ApiModel):
     address: str
     city: str
     state: str
+    latitude: float | None
+    longitude: float | None
     logo_path: str | None
     active: bool
 
@@ -37,6 +39,16 @@ class ArenaUpdate(ApiInput):
     address: str | None = Field(default=None, min_length=1, max_length=240)
     city: str | None = Field(default=None, min_length=1, max_length=120)
     state: str | None = Field(default=None, min_length=2, max_length=2)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+
+    @model_validator(mode="after")
+    def validate_coordinate_pair(self) -> "ArenaUpdate":
+        if ("latitude" in self.model_fields_set) != ("longitude" in self.model_fields_set):
+            raise ValueError("Latitude and longitude must be provided together.")
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Latitude and longitude must both be set or both be empty.")
+        return self
 
 
 class ArenaLogoUpdate(ApiInput):

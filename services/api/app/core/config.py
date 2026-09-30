@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     resend_api_key: str | None = Field(default=None, alias="RESEND_API_KEY")
     email_from: str | None = Field(default=None, alias="EMAIL_FROM")
     frontend_url: str = Field(default="http://localhost:3000", alias="FRONTEND_URL")
+    arena_geocoding_url: str | None = Field(default=None, alias="ARENA_GEOCODING_URL")
+    arena_geocoding_user_agent: str = Field(default="PlayArena/1.0 (+https://useplayarena.com.br)", alias="ARENA_GEOCODING_USER_AGENT")
     email_request_timeout_seconds: PositiveInt = Field(default=5, alias="EMAIL_REQUEST_TIMEOUT_SECONDS")
     booking_advance_amount: Decimal = Field(default=Decimal("5.00"), alias="BOOKING_ADVANCE_AMOUNT", gt=0)
     payment_hold_minutes: PositiveInt = Field(default=10, alias="PAYMENT_HOLD_MINUTES")
@@ -110,6 +112,16 @@ class Settings(BaseSettings):
     @classmethod
     def empty_allowed_user_id_is_unset(cls, value: object) -> object:
         return None if isinstance(value, str) and not value.strip() else value
+
+    @field_validator("arena_geocoding_url")
+    @classmethod
+    def validate_arena_geocoding_url(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        parsed = urlparse(value)
+        if parsed.scheme != "https" or not parsed.netloc or parsed.query or parsed.fragment:
+            raise ValueError("ARENA_GEOCODING_URL must be an HTTPS endpoint without query or fragment.")
+        return value
 
     @property
     def payment_mode(self) -> str:

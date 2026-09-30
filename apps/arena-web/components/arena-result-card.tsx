@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { formatCurrencyBRL, formatTimeBR } from '../lib/format';
 import { ArenaMedia } from './arena-media';
 
-export type AvailabilityOption = { arena_id: string; arena_name: string; logo_path?: string | null; court_id: string; court_name: string; start_at: string; end_at: string; duration_minutes: number; price: string | number };
+export type AvailabilityOption = { arena_id: string; arena_name: string; logo_path?: string | null; court_id: string; court_name: string; start_at: string; end_at: string; duration_minutes: number; price: string | number; distance_km?: number | null };
 export type ArenaAvailabilityGroup = { id: string; name: string; logo_path?: string | null; options: AvailabilityOption[]; imageUrl?: string; distanceKm?: number; rating?: number; reviewsCount?: number; amenities?: string[] };
 
 function optionPrice(option: AvailabilityOption): number {
@@ -16,6 +16,11 @@ function optionPrice(option: AvailabilityOption): number {
 
 function compactPrice(price: string | number): string {
   return formatCurrencyBRL(price).replace(/,00$/, '');
+}
+
+function formatDistance(distance: number): string {
+  if (distance < 1) return `${Math.round(distance * 1000)} m`;
+  return `${new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(distance)} km`;
 }
 
 export function ArenaResultCard({ group, onReserve, sportName, searchedTime, criticalMedia = false }: { group: ArenaAvailabilityGroup; onReserve: (option: AvailabilityOption) => void; sportName: string; searchedTime: string; criticalMedia?: boolean }) {
@@ -31,7 +36,7 @@ export function ArenaResultCard({ group, onReserve, sportName, searchedTime, cri
       <div className="min-w-0 flex-1">
         <h2 className="break-words text-[17px] font-extrabold leading-[1.2] tracking-[-0.025em] text-white">{group.name}</h2>
         <p className="mt-1.5 text-[12px] font-medium text-[#B3BFCA]">{availableCourtsLabel}</p>
-        <p className="mt-0.5 text-[11px] text-[#86939F]">{sportName}</p>
+        <p className="mt-0.5 text-[11px] text-[#86939F]">{sportName}{group.distanceKm !== undefined ? ` · ${formatDistance(group.distanceKm)}` : ''}</p>
       </div>
       {group.rating ? <span className="self-start whitespace-nowrap text-[12px] font-bold text-[#EFC45A]" aria-label={`Avaliação ${group.rating.toLocaleString('pt-BR')}`}>★ {group.rating.toLocaleString('pt-BR')}</span> : null}
     </div>
