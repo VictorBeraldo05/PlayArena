@@ -7,6 +7,7 @@ import { OwnerNavigation } from '../../../components/owner-navigation';
 import { useAuth } from '../../../components/use-auth';
 import { apiRequest } from '../../../lib/api';
 import { BRAZIL_TIME_ZONE, formatCurrencyBRL, formatTimeBR } from '../../../lib/format';
+import { usePageReadyResource } from '../../../providers/page-ready-provider';
 
 type Reservation = {
   id: string;
@@ -48,6 +49,7 @@ export default function ReservationsPage() {
   const [activeId, setActiveId] = useState('');
   const [now] = useState(() => new Date());
   const lock = useRef(false);
+  usePageReadyResource('owner-reservations', items !== null);
 
   async function refresh(accessToken = token) {
     if (!accessToken) return;
@@ -107,7 +109,8 @@ export default function ReservationsPage() {
     }
   }
 
-  const visible = (items ?? []).filter(
+  if (items === null) return null;
+  const visible = items.filter(
     (reservation) =>
       matchesPeriod(reservation, period, now) &&
       (status === 'all' || reservation.status === status),

@@ -51,6 +51,7 @@ export default function AgendaPage() {
   const [day, setDay] = useState(todayInSaoPaulo);
   const [court, setCourt] = useState('');
   const [courts, setCourts] = useState<Court[]>([]);
+  const [courtsReady, setCourtsReady] = useState(false);
   const [slots, setSlots] = useState<Slot[] | null>(null);
   const [isAgendaLoading, setIsAgendaLoading] = useState(true);
   const [agendaError, setAgendaError] = useState('');
@@ -62,7 +63,7 @@ export default function AgendaPage() {
   const [start, setStart] = useState('18:00');
   const [end, setEnd] = useState('19:00');
   const lock = useRef(false);
-  usePageReadyResource('owner-agenda', !isAgendaLoading);
+  usePageReadyResource('owner-agenda', !isAgendaLoading && courtsReady);
 
   async function refresh(accessToken = token) {
     if (!accessToken) {
@@ -96,7 +97,8 @@ export default function AgendaPage() {
     const accessToken = token;
     void apiRequest<Court[]>(`/owner/arenas/${arenaId}/courts`, accessToken)
       .then((data) => startTransition(() => setCourts(data)))
-      .catch(() => startTransition(() => setNotice('Não foi possível carregar os campos.')));
+      .catch(() => startTransition(() => setNotice('Não foi possível carregar os campos.')))
+      .finally(() => startTransition(() => setCourtsReady(true)));
   }, [arenaId, token]);
   useEffect(() => {
     void refresh();
@@ -179,9 +181,10 @@ export default function AgendaPage() {
     setMode(null);
   }
 
-  const groups = groupSlots(slots ?? []);
+  if (slots === null || !courtsReady) return null;
+  const groups = groupSlots(slots);
   const pendingCount = new Set(
-    (slots ?? [])
+    slots
       .filter((slot) => slot.status === 'pending' && slot.reservation_id)
       .map((slot) => slot.reservation_id),
   ).size;

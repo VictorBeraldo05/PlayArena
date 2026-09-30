@@ -29,6 +29,7 @@ interface AuthContextValue {
   profile: Profile | null;
   ownedArenas: Arena[];
   isLoading: boolean;
+  authDataError: boolean;
   errorMessage: string | null;
   signIn: (email: string, password: string) => Promise<boolean>;
   signUp: (input: SignUpInput) => Promise<boolean>;
@@ -44,9 +45,7 @@ export const AuthContext = createContext<AuthContextValue | undefined>(undefined
 
 async function fetchProfile(userId: string): Promise<Profile | null> {
   const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single();
-  if (error) {
-    return null;
-  }
+  if (error) throw error;
   return data as Profile;
 }
 
@@ -57,9 +56,8 @@ async function fetchOwnedArenas(userId: string): Promise<Arena[]> {
     .eq('user_id', userId)
     .order('created_at', { ascending: true });
 
-  if (error || !data) {
-    return [];
-  }
+  if (error) throw error;
+  if (!data) return [];
 
   const rows = data as { arenas: Arena | Arena[] | null }[];
 
@@ -77,6 +75,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [ownedArenas, setOwnedArenas] = useState<Arena[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [authDataError, setAuthDataError] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const hydrationVersion = useRef(0);
 
@@ -86,6 +85,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSession(nextSession);
     setProfile(null);
     setOwnedArenas([]);
+    setAuthDataError(false);
 
     if (!nextSession?.user) {
       setProfile(null);
@@ -94,16 +94,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    const [nextProfile, arenas] = await Promise.all([
-      fetchProfile(nextSession.user.id),
-      fetchOwnedArenas(nextSession.user.id),
-    ]);
-
-    if (version !== hydrationVersion.current) return;
-
-    setProfile(nextProfile);
-    setOwnedArenas(arenas);
-    setIsLoading(false);
+    try {
+      const [nextProfile, arenas] = await Promise.all([
+        fetchProfile(nextSession.user.id),
+        fetchOwnedArenas(nextSession.user.id),
+      ]);
+      if (version !== hydrationVersion.current) return;
+      setProfile(nextProfile);
+      setOwnedArenas(arenas);
+      setAuthDataError(!nextProfile);
+    } catch {
+      if (version !== hydrationVersion.current) return;
+      setAuthDataError(true);
+    } finally {
+      if (version === hydrationVersion.current) setIsLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -167,9 +172,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    const [nextProfile, arenas] = await Promise.all([fetchProfile(session.user.id), fetchOwnedArenas(session.user.id)]);
-    setProfile(nextProfile);
-    setOwnedArenas(arenas);
+    try {
+      const [nextProfile, arenas] = await Promise.all([fetchProfile(session.user.id), fetchOwnedArenas(session.user.id)]);
+      setProfile(nextProfile);
+      setOwnedArenas(arenas);
+      setAuthDataError(!nextProfile);
+    } catch {
+      setAuthDataError(true);
+    }
   }
 
   async function updatePlayerProfile(input: { fullName: string; phone: string }) {
@@ -237,6 +247,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     profile,
     ownedArenas,
     isLoading,
+    authDataError,
     errorMessage,
     signIn,
     signUp,

@@ -31,9 +31,10 @@ export function ManagementDashboard() {
   const [loadState, setLoadState] = useState<LoadState>('loading');
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [arenaOpen, setArenaOpen] = useState<boolean | null>(null);
+  const [hoursReady, setHoursReady] = useState(false);
   const arenaName = ownedArenas.length === 1 ? ownedArenas[0].name : 'Suas arenas';
   const primaryArena = ownedArenas[0];
-  usePageReadyResource('owner-dashboard', loadState !== 'loading');
+  usePageReadyResource('owner-dashboard', loadState !== 'loading' && hoursReady);
 
   useEffect(() => {
     if (!session?.access_token) return;
@@ -60,7 +61,8 @@ export function ManagementDashboard() {
     const task = window.setTimeout(() => {
       void apiRequest<OpeningHour[]>(`/owner/arenas/${primaryArena.id}/opening-hours`, session.access_token)
         .then((hours) => { if (active) setArenaOpen(isArenaOpenNow(hours)); })
-        .catch(() => { if (active) setArenaOpen(null); });
+        .catch(() => { if (active) setArenaOpen(null); })
+        .finally(() => { if (active) setHoursReady(true); });
     }, 0);
     return () => { active = false; window.clearTimeout(task); };
   }, [primaryArena, session?.access_token]);
@@ -70,6 +72,8 @@ export function ManagementDashboard() {
   const reservationsToday = summary?.reservations_today ?? '—';
   const occupancyToday = summary ? `${Number(summary.occupancy_today).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%` : '—';
   const revenueToday = summary ? formatCurrencyBRL(summary.app_revenue) : '—';
+
+  if ((isLoading && !summary) || !hoursReady) return null;
 
   return <div className="mx-auto w-full max-w-[640px] pb-28">
     <header className="mb-4"><ArenaIdentity arenaName={arenaName} avatar={initials(profile?.full_name ?? '')} isOpen={arenaOpen} key={`${primaryArena?.logo_path ?? 'fallback'}-${primaryArena?.updated_at ?? ''}`} logoPath={primaryArena?.logo_path} version={primaryArena?.updated_at}/></header>

@@ -9,6 +9,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from './use-auth';
 import { OwnerHoursPanel } from './owner-hours-panel';
 import { OwnerPricesPanel } from './owner-prices-panel';
+import { usePageReadyResource } from '../providers/page-ready-provider';
 
 type View = 'overview' | 'arena' | 'courts' | 'hours' | 'prices';
 type Summary = { arena: Arena; court_count: number; sport_count: number; opening_hours_configured: boolean; pricing_rules_configured: boolean };
@@ -17,6 +18,7 @@ export function OwnerConsole({ view }: { view: View }) {
   const { session, ownedArenas } = useAuth(); const arena = ownedArenas[0];
   const [data, setData] = useState<Summary | Arena | Court[] | OpeningHour[] | PricingRule[] | null>(null);
   const [courts, setCourts] = useState<Court[]>([]); const [sports, setSports] = useState<Sport[]>([]); const [sportsLoading, setSportsLoading] = useState(false); const [sportsError, setSportsError] = useState<string | null>(null); const [error, setError] = useState<string | null>(null); const [notice, setNotice] = useState<string | null>(null);
+  usePageReadyResource(`owner-console-${view}`, data !== null || error !== null);
   async function load() { if (!arena || !session) return; try { setError(null); const token=session.access_token;
     if(view==='overview') setData(await apiRequest(`/owner/arenas/${arena.id}/dashboard`,token));
     if(view==='arena') setData(await apiRequest(`/owner/arenas/${arena.id}`,token));
@@ -26,16 +28,14 @@ export function OwnerConsole({ view }: { view: View }) {
   } catch(e){if(view==='courts'){setSportsLoading(false);setSportsError('Não foi possível carregar as modalidades.')}setError(e instanceof Error?e.message:'Nao foi possivel carregar esta tela.')} }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(()=>{const id=window.setTimeout(()=>void load(),0);return()=>window.clearTimeout(id)},[arena?.id,session?.access_token,view]);
-  if(!arena) return <Card title="Carregando sua arena">Aguarde um instante.</Card>;
+  if(!arena) return null;
   if(error) return <Card title={view==='prices'?'Não foi possível carregar os preços':'Nao foi possivel carregar'}><p className="text-[#FF4B4B]">{error}</p><button className="button mt-4" onClick={()=>void load()}>Tentar novamente</button></Card>;
-  if(!data) return view==='hours'?<HoursSkeleton/>:view==='prices'?<PricesSkeleton/>:<Card title="Preparando seu painel">Carregando configuracao...</Card>;
+  if(!data) return null;
   const common={arena,token:session!.access_token,done:(message:string)=>{setNotice(message);void load()}};
   return <>{notice&&<p className="mb-4 rounded-2xl border border-[#8FFF3C]/30 bg-[#8FFF3C]/10 p-3 text-sm font-semibold text-[#8FFF3C]">{notice}</p>}
     {view==='overview'&&<Overview summary={data as Summary}/>} {view==='arena'&&<ArenaEditor key={JSON.stringify(data)} {...common} initial={data as Arena}/>} {view==='courts'&&<Courts {...common} courts={courts} sports={sports} sportsLoading={sportsLoading} sportsError={sportsError}/>} {view==='hours'&&<OwnerHoursPanel key={JSON.stringify(data)} {...common} hours={data as OpeningHour[]}/>} {view==='prices'&&<OwnerPricesPanel key={JSON.stringify(data)} {...common} rules={data as PricingRule[]} courts={courts}/>}</>;
 }
 function Card({title,children}:{title:string;children:React.ReactNode}){return <section className="rounded-[18px] border border-white/5 bg-[#111923] p-5 shadow-xl shadow-black/20"><h2 className="text-xl font-bold text-white">{title}</h2><div className="mt-3 text-sm leading-6 text-[#9DA7B3]">{children}</div></section>}
-function HoursSkeleton(){return <section aria-label="Carregando horários" className="overflow-hidden rounded-[20px] border border-white/5 bg-[#111923] p-5"><div className="h-3 w-36 animate-pulse rounded bg-[#25303C]"/><div className="mt-3 h-7 w-28 animate-pulse rounded bg-[#25303C]"/><div className="mt-6 divide-y divide-white/7">{Array.from({length:7},(_,index)=><div className="flex h-[68px] items-center justify-between" key={index}><div className="h-4 w-28 animate-pulse rounded bg-[#25303C]"/><div className="h-4 w-24 animate-pulse rounded bg-[#25303C]"/></div>)}</div></section>}
-function PricesSkeleton(){return <section aria-label="Carregando preços" className="overflow-hidden rounded-[20px] border border-white/5 bg-[#111923] px-5"><div className="h-8 w-24 animate-pulse rounded bg-[#25303C]"/><div className="mt-2 h-4 w-28 animate-pulse rounded bg-[#25303C]"/><div className="mt-5 divide-y divide-white/7">{Array.from({length:4},(_,index)=><div className="flex h-20 items-center justify-between" key={index}><div><div className="h-4 w-28 animate-pulse rounded bg-[#25303C]"/><div className="mt-2 h-3 w-20 animate-pulse rounded bg-[#25303C]"/></div><div className="h-4 w-16 animate-pulse rounded bg-[#25303C]"/></div>)}</div></section>}
 function Overview({summary}:{summary:Summary}){const checks=[['Arena',true],['Campos',summary.court_count>0],['Horarios',summary.opening_hours_configured],['Precos',summary.pricing_rules_configured]];return <div className="space-y-5"><Card title={summary.arena.name}><p className="mb-4">Sua operacao society em um so lugar.</p><div className="grid grid-cols-2 gap-3"><Stat n={summary.court_count} t="quadras"/><Stat n={summary.sport_count} t="modalidades"/><Stat n={summary.opening_hours_configured?1:0} t="horarios prontos"/><Stat n={summary.pricing_rules_configured?1:0} t="precos prontos"/></div></Card><Card title="Configuracao"><div className="grid grid-cols-2 gap-3">{checks.map(([label,ok])=><div className={`rounded-xl p-3 font-bold ${ok?'bg-[#8FFF3C]/10 text-[#8FFF3C]':'bg-[#18212D] text-[#9DA7B3]'}`} key={label as string}>{ok?'✓':'○'} {label}</div>)}</div>{checks.every(([,ok])=>ok)&&<p className="mt-5 font-bold text-[#8FFF3C]">Sua arena esta pronta para receber reservas.</p>}</Card></div>}
 function Stat({n,t}:{n:number;t:string}){return <div className="rounded-2xl bg-[#18212D] p-4"><strong className="block text-2xl text-white">{n}</strong><span>{t}</span></div>}
 function parseArenaCoordinate(value:string,min:number,max:number):number|null{
