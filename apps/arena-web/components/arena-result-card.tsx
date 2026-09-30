@@ -1,15 +1,66 @@
 'use client';
 
+import { useState } from 'react';
+
 import { formatCurrencyBRL, formatTimeBR } from '../lib/format';
 import { ArenaMedia } from './arena-media';
 
 export type AvailabilityOption = { arena_id: string; arena_name: string; logo_path?: string | null; court_id: string; court_name: string; start_at: string; end_at: string; duration_minutes: number; price: string | number };
 export type ArenaAvailabilityGroup = { id: string; name: string; logo_path?: string | null; options: AvailabilityOption[]; imageUrl?: string; distanceKm?: number; rating?: number; reviewsCount?: number; amenities?: string[] };
 
-export function ArenaResultCard({ group, onReserve, sportName, criticalMedia = false }: { group: ArenaAvailabilityGroup; onReserve: (option: AvailabilityOption) => void; sportName: string; criticalMedia?: boolean }) {
+function optionPrice(option: AvailabilityOption): number {
+  if (option.price === null || option.price === undefined || option.price === '') return Infinity;
+  const price = Number(option.price);
+  return Number.isFinite(price) && price >= 0 ? price : Infinity;
+}
+
+function compactPrice(price: string | number): string {
+  return formatCurrencyBRL(price).replace(/,00$/, '');
+}
+
+export function ArenaResultCard({ group, onReserve, sportName, searchedTime, criticalMedia = false }: { group: ArenaAvailabilityGroup; onReserve: (option: AvailabilityOption) => void; sportName: string; searchedTime: string; criticalMedia?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const options = [...group.options].sort((a, b) => optionPrice(a) - optionPrice(b));
+  const visibleOptions = expanded ? options : options.slice(0, 2);
+  const hiddenCount = options.length - 2;
   const availableCourtsLabel = `${group.options.length} ${group.options.length === 1 ? 'campo disponível' : 'campos disponíveis'}`;
-  return <article className="overflow-hidden rounded-[20px] border border-white/10 bg-[#111923] shadow-[0_18px_32px_rgba(0,0,0,0.2)]">
-    <ArenaMedia arena={{ name: group.name, logo_path: group.logo_path, photo_url: group.imageUrl }} className="aspect-[16/7]" critical={criticalMedia} priority sport={sportName} variant="hero" />
-    <div className="p-4 sm:p-5"><div className="flex items-start justify-between gap-3"><div><h2 className="text-xl font-black tracking-tight text-white">{group.name}</h2><p className="mt-1 text-sm text-[#9DA7B3]">{availableCourtsLabel} · {sportName}</p></div>{group.rating ? <span className="shrink-0 text-sm font-bold text-[#FFC928]">★ {group.rating.toLocaleString('pt-BR')}</span> : null}</div><div className="mt-4 space-y-3">{group.options.map((option) => <div className="rounded-2xl bg-[#18212D] p-3.5" key={option.court_id}><p className="font-bold text-white">{option.court_name}</p><p className="mt-1 text-sm text-[#9DA7B3]">{formatTimeBR(option.start_at)} às {formatTimeBR(option.end_at)} · {option.duration_minutes} min</p><div className="mt-3 flex items-center justify-between gap-3"><p className="text-base font-black text-white">{formatCurrencyBRL(option.price)} <span className="text-sm font-medium text-[#9DA7B3]">/ hora</span></p><button className="min-h-12 rounded-2xl bg-[#8FFF3C] px-5 text-sm font-black text-[#080D14] transition hover:brightness-105" onClick={() => onReserve(option)} type="button">Reservar</button></div></div>)}</div></div>
+
+  return <article className="overflow-hidden rounded-[19px] border border-white/[0.09] bg-[#111923] shadow-[0_10px_28px_rgba(0,0,0,0.16)]">
+    <div className="flex min-w-0 items-center gap-3 p-3.5 pb-3">
+      <ArenaMedia arena={{ name: group.name, logo_path: group.logo_path, photo_url: group.imageUrl }} className="h-[76px] w-[76px] shrink-0 rounded-[13px] border border-white/[0.08]" critical={criticalMedia} priority={criticalMedia} sport={sportName} variant="thumbnail" />
+      <div className="min-w-0 flex-1">
+        <h2 className="break-words text-[17px] font-extrabold leading-[1.2] tracking-[-0.025em] text-white">{group.name}</h2>
+        <p className="mt-1.5 text-[12px] font-medium text-[#B3BFCA]">{availableCourtsLabel}</p>
+        <p className="mt-0.5 text-[11px] text-[#86939F]">{sportName}</p>
+      </div>
+      {group.rating ? <span className="self-start whitespace-nowrap text-[12px] font-bold text-[#EFC45A]" aria-label={`Avaliação ${group.rating.toLocaleString('pt-BR')}`}>★ {group.rating.toLocaleString('pt-BR')}</span> : null}
+    </div>
+    <div className="border-t border-white/[0.07] px-2.5 pb-2.5">
+      {visibleOptions.map((option) => {
+        const price = optionPrice(option);
+        const available = Number.isFinite(price);
+        const startTime = formatTimeBR(option.start_at);
+        const differsFromSearch = startTime !== searchedTime;
+        const priceLabel = available ? compactPrice(option.price) : 'Preço indisponível';
+        return <button
+          aria-label={`${option.court_name}, ${option.duration_minutes} minutos${differsFromSearch ? `, ${startTime}` : ''}, ${priceLabel}${available ? ', reservar' : ', indisponível'}`}
+          className="group flex min-h-[54px] w-full items-center justify-between gap-2 rounded-[11px] px-2.5 text-left transition-colors hover:bg-[#1B2932] active:bg-[#21333B] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#8FFF3C] disabled:cursor-not-allowed disabled:opacity-55"
+          disabled={!available}
+          key={`${option.court_id}-${option.start_at}`}
+          onClick={() => onReserve(option)}
+          type="button"
+        >
+          <span className="flex min-w-0 flex-1 flex-col justify-center py-1.5">
+            <span className="break-words text-[13px] font-bold leading-[1.25] text-white">{option.court_name}</span>
+            <span className="mt-0.5 text-[11px] leading-[1.25] text-[#95A3B0]">{differsFromSearch ? `${startTime} · ` : ''}{option.duration_minutes} min</span>
+          </span>
+          <span className="flex shrink-0 items-center gap-2">
+            <span className={`whitespace-nowrap text-[13px] font-extrabold tabular-nums ${available ? 'text-white' : 'text-[#95A3B0]'}`}>{priceLabel}</span>
+            <svg aria-hidden="true" className="h-4 w-4 text-[#8FFF3C] transition-transform group-hover:translate-x-0.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7" /></svg>
+          </span>
+        </button>;
+      })}
+      {hiddenCount > 0 ? <button aria-expanded={expanded} className="flex min-h-11 w-full items-center justify-center gap-1 rounded-[11px] text-[12px] font-bold text-[#B8D7C2] transition-colors hover:bg-[#1B2932] hover:text-[#8FFF3C] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" onClick={() => setExpanded((current) => !current)} type="button">{expanded ? 'Mostrar menos' : `+ ${hiddenCount} ${hiddenCount === 1 ? 'opção' : 'opções'} nesta arena`}<span aria-hidden="true" className={`ml-0.5 transition-transform ${expanded ? 'rotate-180' : ''}`}>⌄</span></button> : null}
+    </div>
   </article>;
 }

@@ -21,7 +21,10 @@ function groupByArena(options: AvailabilityOption[]): ArenaAvailabilityGroup[] {
 }
 
 function ResultSkeleton() {
-  return <div className="overflow-hidden rounded-[20px] border border-white/5 bg-[#111923]"><div className="aspect-[16/7] animate-pulse bg-[#18212D]" /><div className="space-y-3 p-5"><div className="h-6 w-3/5 animate-pulse rounded bg-[#18212D]" /><div className="h-20 animate-pulse rounded-2xl bg-[#18212D]" /></div></div>;
+  return <div aria-hidden="true" className="overflow-hidden rounded-[19px] border border-white/[0.07] bg-[#111923]">
+    <div className="flex items-center gap-3 p-3.5"><div className="h-[76px] w-[76px] shrink-0 animate-pulse rounded-[13px] bg-[#23303D]" /><div className="flex-1 space-y-2"><div className="h-5 w-3/5 animate-pulse rounded bg-[#23303D]" /><div className="h-3 w-2/5 animate-pulse rounded bg-[#23303D]" /><div className="h-3 w-1/4 animate-pulse rounded bg-[#23303D]" /></div></div>
+    <div className="border-t border-white/[0.07] px-5 py-2"><div className="h-[54px] animate-pulse border-b border-white/[0.05]" /><div className="h-[54px] animate-pulse" /></div>
+  </div>;
 }
 
 function ResultsPage() {
@@ -87,7 +90,31 @@ function ResultsPage() {
   const groups = items ? groupByArena(items) : [];
   const dateLabel = day === todayInSaoPaulo() ? 'Hoje' : formatDateBR(day).slice(0, 5);
   const resultsTitle = arenaId ? 'Horários disponíveis' : 'Arenas disponíveis';
-  return <main className={`min-h-[100dvh] bg-[#080D14] text-white ${showPlayerNavigation ? 'pb-24' : 'pb-[env(safe-area-inset-bottom)]'}`}><PageReadyGate ready={items !== null || error} resourceId="availability" /><div className="mx-auto w-full max-w-[640px] px-4 pb-6 pt-5 sm:px-5"><header className="grid grid-cols-[44px_1fr_44px] items-center"><button aria-label="Voltar para escolher horário" className="grid min-h-11 place-items-center rounded-xl text-2xl text-[#9DA7B3]" onClick={() => router.push(backToSearch)} type="button">‹</button><div><h1 className="text-center text-xl font-black tracking-tight">{resultsTitle}</h1><p className="mt-2 text-center text-sm font-medium text-[#9DA7B3]">{sport} · {dateLabel} · {time}</p></div><span /></header><section aria-label="Controles de resultados" className="mt-6 flex items-center justify-between gap-3"><button className="flex min-h-12 items-center gap-2 rounded-2xl border border-white/10 bg-[#18212D] px-4 text-sm font-bold text-white" type="button">Mais perto <span className="text-[#9DA7B3]">⌄</span></button><button className="flex min-h-12 items-center gap-2 rounded-2xl border border-white/10 px-4 text-sm font-bold text-white" type="button"><span aria-hidden="true">☷</span> Filtros</button></section><section aria-live="polite" className="mt-5 space-y-4">{items === null && !error ? <><ResultSkeleton /><ResultSkeleton /></> : null}{error ? <div className="rounded-[20px] border border-white/10 bg-[#111923] p-6 text-center"><h2 className="text-lg font-black">Não foi possível carregar as arenas.</h2><button className="mt-4 min-h-12 rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14]" onClick={() => setReloadVersion((version) => version + 1)} type="button">Tentar novamente</button></div> : null}{items && groups.length === 0 ? <div className="rounded-[20px] border border-white/10 bg-[#111923] p-6 text-center"><h2 className="text-xl font-black">Nenhum campo disponível</h2><p className="mt-2 text-sm text-[#9DA7B3]">Não encontramos campos para esse horário.</p><button className="mt-5 min-h-12 rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14]" onClick={() => router.push(backToSearch)} type="button">Escolher outro horário</button></div> : null}{groups.map((group, index) => <ArenaResultCard criticalMedia={index === 0} group={group} key={group.id} onReserve={reserve} sportName={sport} />)}</section></div><PublicBottomNavigation /></main>;
+  const searchSummary = [sport, `${dateLabel}, ${time}`, city].filter(Boolean).join(' · ');
+  const resultCount = items ? `${items.length} ${items.length === 1 ? 'opção' : 'opções'} em ${groups.length} ${groups.length === 1 ? 'arena' : 'arenas'}` : '';
+
+  return <main className={`min-h-[100dvh] bg-[#080D14] text-white ${showPlayerNavigation ? 'pb-24' : 'pb-[env(safe-area-inset-bottom)]'}`}>
+    <PageReadyGate ready={items !== null || error} resourceId="availability" />
+    <div className="mx-auto w-full max-w-[640px] px-4 pb-6 pt-4 sm:px-5">
+      <header className="grid grid-cols-[44px_minmax(0,1fr)_44px] items-center">
+        <button aria-label="Voltar para escolher horário" className="grid min-h-11 place-items-center rounded-xl text-[#9DA7B3] transition-colors hover:bg-white/5 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" onClick={() => router.push(backToSearch)} type="button"><svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></svg></button>
+        <div className="min-w-0"><h1 className="truncate text-center text-[18px] font-extrabold tracking-[-0.03em]">{resultsTitle}</h1><p className="mt-1 truncate text-center text-[12px] font-medium text-[#9DA7B3]" title={searchSummary}>{searchSummary}</p></div>
+        <span />
+      </header>
+      <section aria-label="Controles de resultados" className="mt-5 flex items-center justify-between gap-3">
+        <button className="flex min-h-10 items-center gap-2 rounded-xl border border-white/[0.09] bg-[#18212D] px-3.5 text-[12px] font-bold text-[#E8EDF1] transition-colors hover:border-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" type="button">Mais perto <span aria-hidden="true" className="text-[#9DA7B3]">⌄</span></button>
+        <button className="flex min-h-10 items-center gap-2 rounded-xl border border-white/[0.09] px-3.5 text-[12px] font-bold text-[#E8EDF1] transition-colors hover:border-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" type="button"><svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M4 7h16M7 12h10M10 17h4" /></svg>Filtros</button>
+      </section>
+      {items && groups.length > 0 ? <p className="mb-2.5 mt-5 px-0.5 text-[11px] font-semibold uppercase tracking-[0.1em] text-[#9DA7B3]">{resultCount}</p> : null}
+      <section aria-label="Resultados da busca" aria-live="polite" className={`${items && groups.length > 0 ? '' : 'mt-5'} space-y-3.5`}>
+        {items === null && !error ? <><ResultSkeleton /><ResultSkeleton /></> : null}
+        {error ? <div className="rounded-[19px] border border-white/10 bg-[#111923] p-6 text-center"><h2 className="text-lg font-black">Não foi possível carregar as arenas.</h2><button className="mt-4 min-h-12 rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14]" onClick={() => setReloadVersion((version) => version + 1)} type="button">Tentar novamente</button></div> : null}
+        {items && groups.length === 0 ? <div className="rounded-[19px] border border-white/10 bg-[#111923] p-6 text-center"><h2 className="text-xl font-black">Nenhum campo disponível</h2><p className="mt-2 text-sm text-[#9DA7B3]">Não encontramos campos para esse horário.</p><button className="mt-5 min-h-12 rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14]" onClick={() => router.push(backToSearch)} type="button">Escolher outro horário</button></div> : null}
+        {groups.map((group, index) => <ArenaResultCard criticalMedia={index === 0} group={group} key={group.id} onReserve={reserve} searchedTime={time} sportName={sport} />)}
+      </section>
+    </div>
+    <PublicBottomNavigation />
+  </main>;
 }
 
 export default function Page() {
