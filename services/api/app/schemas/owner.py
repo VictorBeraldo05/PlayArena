@@ -39,8 +39,8 @@ class ArenaUpdate(ApiInput):
     address: str | None = Field(default=None, min_length=1, max_length=240)
     city: str | None = Field(default=None, min_length=1, max_length=120)
     state: str | None = Field(default=None, min_length=2, max_length=2)
-    latitude: float | None = Field(default=None, ge=-90, le=90)
-    longitude: float | None = Field(default=None, ge=-180, le=180)
+    latitude: float | None = Field(default=None, ge=-90, le=90, allow_inf_nan=False)
+    longitude: float | None = Field(default=None, ge=-180, le=180, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_coordinate_pair(self) -> "ArenaUpdate":

@@ -79,7 +79,13 @@ def test_owner_coordinate_pair_validation() -> None:
     with pytest.raises(ValueError):
         ArenaUpdate(latitude=-22.72)
     with pytest.raises(ValueError):
+        ArenaUpdate(longitude=-47.64)
+    with pytest.raises(ValueError):
         ArenaUpdate(latitude=91, longitude=0)
+    with pytest.raises(ValueError):
+        ArenaUpdate(latitude=0, longitude=-181)
+    with pytest.raises(ValueError):
+        ArenaUpdate(latitude=float("nan"), longitude=0)
 
 
 def test_geocoder_accepts_matching_brazilian_result_only(monkeypatch) -> None:

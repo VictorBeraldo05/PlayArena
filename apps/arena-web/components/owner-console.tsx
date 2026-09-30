@@ -38,11 +38,24 @@ function HoursSkeleton(){return <section aria-label="Carregando horários" class
 function PricesSkeleton(){return <section aria-label="Carregando preços" className="overflow-hidden rounded-[20px] border border-white/5 bg-[#111923] px-5"><div className="h-8 w-24 animate-pulse rounded bg-[#25303C]"/><div className="mt-2 h-4 w-28 animate-pulse rounded bg-[#25303C]"/><div className="mt-5 divide-y divide-white/7">{Array.from({length:4},(_,index)=><div className="flex h-20 items-center justify-between" key={index}><div><div className="h-4 w-28 animate-pulse rounded bg-[#25303C]"/><div className="mt-2 h-3 w-20 animate-pulse rounded bg-[#25303C]"/></div><div className="h-4 w-16 animate-pulse rounded bg-[#25303C]"/></div>)}</div></section>}
 function Overview({summary}:{summary:Summary}){const checks=[['Arena',true],['Campos',summary.court_count>0],['Horarios',summary.opening_hours_configured],['Precos',summary.pricing_rules_configured]];return <div className="space-y-5"><Card title={summary.arena.name}><p className="mb-4">Sua operacao society em um so lugar.</p><div className="grid grid-cols-2 gap-3"><Stat n={summary.court_count} t="quadras"/><Stat n={summary.sport_count} t="modalidades"/><Stat n={summary.opening_hours_configured?1:0} t="horarios prontos"/><Stat n={summary.pricing_rules_configured?1:0} t="precos prontos"/></div></Card><Card title="Configuracao"><div className="grid grid-cols-2 gap-3">{checks.map(([label,ok])=><div className={`rounded-xl p-3 font-bold ${ok?'bg-[#8FFF3C]/10 text-[#8FFF3C]':'bg-[#18212D] text-[#9DA7B3]'}`} key={label as string}>{ok?'✓':'○'} {label}</div>)}</div>{checks.every(([,ok])=>ok)&&<p className="mt-5 font-bold text-[#8FFF3C]">Sua arena esta pronta para receber reservas.</p>}</Card></div>}
 function Stat({n,t}:{n:number;t:string}){return <div className="rounded-2xl bg-[#18212D] p-4"><strong className="block text-2xl text-white">{n}</strong><span>{t}</span></div>}
+function parseArenaCoordinate(value:string,min:number,max:number):number|null{
+  const normalized=value.trim().replace(',','.');
+  if(!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalized))return null;
+  const coordinate=Number(normalized);
+  return Number.isFinite(coordinate)&&coordinate>=min&&coordinate<=max?coordinate:null;
+}
 function ArenaEditor({arena,token,initial,done}:{arena:Arena;token:string;initial:Arena;done:(m:string)=>void}){
   const [form,setForm]=useState(initial);
   const [positionSelected,setPositionSelected]=useState(false);
   const [positionBusy,setPositionBusy]=useState(false);
   const [positionMessage,setPositionMessage]=useState('');
+  const [manualOpen,setManualOpen]=useState(false);
+  const [manualLatitude,setManualLatitude]=useState('');
+  const [manualLongitude,setManualLongitude]=useState('');
+  const [manualBusy,setManualBusy]=useState(false);
+  const [manualMessage,setManualMessage]=useState('');
+  const [manualSaved,setManualSaved]=useState(false);
+  const manualLock=useRef(false);
   function captureArenaPosition(){
     if(!navigator.geolocation||!window.isSecureContext){setPositionMessage('Localização indisponível neste navegador.');return;}
     setPositionBusy(true);
@@ -63,14 +76,49 @@ function ArenaEditor({arena,token,initial,done}:{arena:Arena;token:string;initia
     setPositionSelected(false);
     done('Dados da arena atualizados.');
   }
+  async function saveManualLocation(){
+    if(manualLock.current)return;
+    if(!manualLatitude.trim()||!manualLongitude.trim()){setManualMessage('Informe latitude e longitude.');return;}
+    const latitude=parseArenaCoordinate(manualLatitude,-90,90);
+    const longitude=parseArenaCoordinate(manualLongitude,-180,180);
+    if(latitude===null){setManualMessage('Latitude deve estar entre -90 e 90.');return;}
+    if(longitude===null){setManualMessage('Longitude deve estar entre -180 e 180.');return;}
+    manualLock.current=true;
+    setManualBusy(true);
+    setManualMessage('');
+    try{
+      await apiRequest(`/owner/arenas/${arena.id}`,token,{method:'PATCH',body:JSON.stringify({latitude,longitude})});
+      setForm(current=>({...current,latitude,longitude}));
+      setPositionSelected(false);
+      setManualSaved(true);
+      setManualOpen(false);
+      setManualMessage('Localização atualizada');
+    }catch{
+      setManualMessage('Não foi possível salvar a localização.');
+    }finally{
+      manualLock.current=false;
+      setManualBusy(false);
+    }
+  }
   const addressChanged=form.address!==initial.address||form.city!==initial.city||form.state!==initial.state;
-  return <div className="space-y-4"><ArenaLogoManager arena={arena} initialPath={initial.logo_path} token={token} done={done}/><Save title="Dados da arena" action="Salvar alteracoes" onSave={saveArena}>
+  return <div className="space-y-4" data-owner-arena-editor><ArenaLogoManager arena={arena} initialPath={initial.logo_path} token={token} done={done}/><Save title="Dados da arena" action="Salvar alteracoes" onSave={saveArena}>
     {['name','description','whatsapp','phone','address','city','state'].map(key=><label className="grid gap-1 capitalize" key={key}>{key}<input value={(form as unknown as Record<string,string>)[key]||''} onChange={e=>setForm({...form,[key]:e.target.value})}/></label>)}
     <div className="rounded-xl border border-white/[0.08] bg-[#18212D] p-3">
-      <p className="text-xs text-[#9DA7B3]">{positionSelected?'Nova posição pronta para salvar.':addressChanged?'Ao salvar o novo endereço, a posição será recalculada se houver geocoder configurado.':typeof initial.latitude==='number'&&typeof initial.longitude==='number'?'Localização da arena pronta para ordenar por distância.':'Sem coordenadas: a arena aparece normalmente, mas depois das arenas com distância conhecida.'}</p>
+      <p className="text-[11px] font-extrabold uppercase tracking-[0.12em] text-[#D8E0E7]">Localização da arena</p>
+      <p className="mt-2 text-xs text-[#9DA7B3]">{positionSelected?'Nova posição pronta para salvar.':addressChanged?'Ao salvar o novo endereço, a posição será recalculada se houver geocoder configurado.':manualSaved||typeof initial.latitude==='number'&&typeof initial.longitude==='number'?'Localização configurada':'Sem coordenadas: a arena aparece normalmente, mas depois das arenas com distância conhecida.'}</p>
       <p className="mt-1 text-[11px] text-[#9DA7B3]">Use a posição atual somente se você estiver fisicamente na arena.</p>
-      <button className="mt-2 min-h-11 rounded-xl border border-[#8FFF3C]/35 px-3 text-xs font-bold text-[#8FFF3C] disabled:opacity-60" disabled={positionBusy} onClick={captureArenaPosition} type="button">{positionBusy?'Localizando...':'Usar minha posição na arena'}</button>
+      <button className="mt-3 min-h-11 w-full rounded-xl border border-[#8FFF3C]/35 px-3 text-xs font-bold text-[#8FFF3C] disabled:opacity-60" disabled={positionBusy} onClick={captureArenaPosition} type="button">{positionBusy?'Localizando...':'Usar minha posição na arena'}</button>
+      <p aria-hidden="true" className="my-1 text-center text-[10px] text-[#788591]">ou</p>
+      <button aria-controls="arena-manual-location" aria-expanded={manualOpen} className="min-h-11 w-full rounded-xl border border-white/[0.12] px-3 text-xs font-bold text-white transition-colors hover:bg-white/[0.05] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" onClick={()=>{setManualOpen(current=>!current);setManualMessage('');}} type="button">{manualOpen?'Fechar localização manual':'Informar manualmente'}</button>
+      {manualOpen?<div className="mt-3 border-t border-white/[0.08] pt-3" id="arena-manual-location">
+        <div className="grid grid-cols-2 gap-2.5">
+          <label className="min-w-0 text-[11px] font-semibold text-[#C4CFD8]">Latitude<input autoComplete="off" className="mt-1.5 min-h-11 w-full min-w-0 rounded-xl border border-white/[0.12] bg-[#101923] px-3 text-[13px] text-white outline-none placeholder:text-[#74818E] focus:border-[#8FFF3C]" inputMode="decimal" onChange={event=>{setManualLatitude(event.target.value);setManualMessage('');}} placeholder="-22.725432" type="text" value={manualLatitude}/></label>
+          <label className="min-w-0 text-[11px] font-semibold text-[#C4CFD8]">Longitude<input autoComplete="off" className="mt-1.5 min-h-11 w-full min-w-0 rounded-xl border border-white/[0.12] bg-[#101923] px-3 text-[13px] text-white outline-none placeholder:text-[#74818E] focus:border-[#8FFF3C]" inputMode="decimal" onChange={event=>{setManualLongitude(event.target.value);setManualMessage('');}} placeholder="-47.649821" type="text" value={manualLongitude}/></label>
+        </div>
+        <button className="mt-3 min-h-11 w-full rounded-xl bg-[#8FFF3C] px-3 text-xs font-extrabold text-[#080D14] transition hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white disabled:opacity-60" disabled={manualBusy} onClick={()=>void saveManualLocation()} type="button">{manualBusy?'Salvando...':'Salvar localização'}</button>
+      </div>:null}
       {positionMessage?<p aria-live="polite" className="mt-2 text-xs text-[#9DA7B3]">{positionMessage}</p>:null}
+      {manualMessage?<p aria-live="polite" className={`mt-2 text-xs ${manualMessage==='Localização atualizada'?'text-[#8FFF3C]':'text-[#FFB3A9]'}`}>{manualMessage}</p>:null}
     </div>
   </Save></div>;
 }

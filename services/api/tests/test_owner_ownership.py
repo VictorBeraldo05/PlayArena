@@ -10,7 +10,7 @@ from app.api.routes.owner import require_arena_owner
 from app.repositories import owner_repository
 from app.repositories.owner_repository import OwnerResourceNotFoundError, ReservationStateError
 from app.schemas.auth import AuthenticatedUser
-from app.schemas.owner import ArenaLogoUpdate
+from app.schemas.owner import ArenaLogoUpdate, ArenaUpdate
 
 OWNER_A = "00000000-0000-0000-0000-00000000000a"
 OWNER_B = "00000000-0000-0000-0000-00000000000b"
@@ -221,3 +221,46 @@ def test_owner_cannot_persist_a_logo_path_for_another_arena() -> None:
         )
 
     assert error.value.status_code == 422
+
+
+@pytest.mark.parametrize(("arena_id", "allowed"), [(ARENA_A, True), (ARENA_B, False)])
+def test_owner_manual_coordinates_use_existing_ownership_guard(monkeypatch, arena_id, allowed) -> None:
+    class CoordinateSession(OwnershipSession):
+        def __init__(self) -> None:
+            self.updates = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, statement, params):
+            if str(statement).strip().lower().startswith("update public.arenas"):
+                self.updates.append(params)
+                return Result(None)
+            return super().execute(statement, params)
+
+    session = CoordinateSession()
+
+    class Factory:
+        def __call__(self):
+            return session
+
+        def begin(self):
+            return session
+
+    monkeypatch.setattr(owner_repository, "get_session_factory", lambda: Factory())
+    input_data = ArenaUpdate(latitude=-22.725432, longitude=-47.649821)
+
+    if allowed:
+        owner.patch_owner_arena(route_request(), arena_id, input_data, AuthenticatedUser(id=OWNER_A))
+        assert len(session.updates) == 1
+        assert session.updates[0]["arena_id"] == ARENA_A
+        assert session.updates[0]["latitude"] == -22.725432
+        assert session.updates[0]["longitude"] == -47.649821
+    else:
+        with pytest.raises(HTTPException) as error:
+            owner.patch_owner_arena(route_request(), arena_id, input_data, AuthenticatedUser(id=OWNER_A))
+        assert error.value.status_code == 404
+        assert session.updates == []

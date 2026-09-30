@@ -687,3 +687,4 @@ input, select { min-height: 48px; width: 100%; border: 1px solid rgba(255,255,25
 @keyframes discovery-enter { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) { .player-bottom-nav *, .player-bottom-nav *::before, .player-bottom-nav *::after { transition: none !important; } }
 .arena-media-thumbnail.is-logo { padding: 5px; background: radial-gradient(circle at 50% 35%, #22373a, #101b22 76%); }
+[data-owner-arena-editor] input.sr-only[type="file"] { left: 0; top: 0; }
