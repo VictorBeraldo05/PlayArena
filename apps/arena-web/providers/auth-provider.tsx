@@ -6,6 +6,7 @@ import { createContext, useEffect, useRef, useState } from 'react';
 import { Arena, Profile } from '@playarena/types';
 
 import { supabase } from '../lib/supabase';
+import { clearOwnerArenaCache } from '../lib/owner-arena-cache';
 
 interface SignUpInput {
   fullName: string;
@@ -78,9 +79,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [authDataError, setAuthDataError] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const hydrationVersion = useRef(0);
+  const readyUserId = useRef<string | null>(null);
 
   async function hydrateAuth(nextSession: Session | null) {
     const version = ++hydrationVersion.current;
+    if (!nextSession?.user || (readyUserId.current && readyUserId.current !== nextSession.user.id)) {
+      clearOwnerArenaCache();
+      readyUserId.current = null;
+    }
     setIsLoading(true);
     setSession(nextSession);
     setProfile(null);
@@ -103,9 +109,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setProfile(nextProfile);
       setOwnedArenas(arenas);
       setAuthDataError(!nextProfile);
+      readyUserId.current = nextProfile ? nextSession.user.id : null;
     } catch {
       if (version !== hydrationVersion.current) return;
       setAuthDataError(true);
+      readyUserId.current = null;
     } finally {
       if (version === hydrationVersion.current) setIsLoading(false);
     }
@@ -120,7 +128,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && nextSession?.user.id === readyUserId.current) {
+        setSession(nextSession);
+        return;
+      }
       void hydrateAuth(nextSession);
     });
 
@@ -163,6 +175,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   async function signOut() {
     setErrorMessage(null);
+    clearOwnerArenaCache();
+    readyUserId.current = null;
     setSession(null); setProfile(null); setOwnedArenas([]); setIsLoading(false);
     await supabase.auth.signOut();
   }
@@ -177,6 +191,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setProfile(nextProfile);
       setOwnedArenas(arenas);
       setAuthDataError(!nextProfile);
+      readyUserId.current = nextProfile ? session.user.id : null;
     } catch {
       setAuthDataError(true);
     }

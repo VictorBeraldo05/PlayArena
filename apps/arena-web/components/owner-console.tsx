@@ -10,30 +10,44 @@ import { useAuth } from './use-auth';
 import { OwnerHoursPanel } from './owner-hours-panel';
 import { OwnerPricesPanel } from './owner-prices-panel';
 import { usePageReadyResource } from '../providers/page-ready-provider';
+import { fetchOwnerArena, readOwnerArenaCache, setOwnerArenaCache } from '../lib/owner-arena-cache';
 
 type View = 'overview' | 'arena' | 'courts' | 'hours' | 'prices';
 type Summary = { arena: Arena; court_count: number; sport_count: number; opening_hours_configured: boolean; pricing_rules_configured: boolean };
 
 export function OwnerConsole({ view }: { view: View }) {
   const { session, ownedArenas } = useAuth(); const arena = ownedArenas[0];
-  const [data, setData] = useState<Summary | Arena | Court[] | OpeningHour[] | PricingRule[] | null>(null);
+  const userId = session?.user.id;
+  const [data, setData] = useState<Summary | Arena | Court[] | OpeningHour[] | PricingRule[] | null>(() =>
+    view === 'arena' && userId && arena ? readOwnerArenaCache(userId, arena.id)?.data ?? null : null,
+  );
   const [courts, setCourts] = useState<Court[]>([]); const [sports, setSports] = useState<Sport[]>([]); const [sportsLoading, setSportsLoading] = useState(false); const [sportsError, setSportsError] = useState<string | null>(null); const [error, setError] = useState<string | null>(null); const [notice, setNotice] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState(false);
+  const arenaEditorDirty = useRef(false);
   usePageReadyResource(`owner-console-${view}`, data !== null || error !== null);
   async function load() { if (!arena || !session) return; try { setError(null); const token=session.access_token;
     if(view==='overview') setData(await apiRequest(`/owner/arenas/${arena.id}/dashboard`,token));
-    if(view==='arena') setData(await apiRequest(`/owner/arenas/${arena.id}`,token));
+    if(view==='arena'){
+      const cached = readOwnerArenaCache(session.user.id, arena.id);
+      if(cached){setData(current=>current??cached.data);if(cached.fresh)return;}
+      const updated = await fetchOwnerArena(session.user.id, arena.id, () => apiRequest<Arena>(`/owner/arenas/${arena.id}`, token));
+      if(!arenaEditorDirty.current)setData(updated);
+      setRefreshError(false);
+    }
     if(view==='courts'){setSportsLoading(true);setSportsError(null);const [items, availableSports]=await Promise.all([apiRequest<Court[]>(`/owner/arenas/${arena.id}/courts`,token),apiRequest<Sport[]>('/sports',token)]);setCourts(items);setSports(availableSports);setData(items);setSportsLoading(false)}
     if(view==='hours') setData(await apiRequest(`/owner/arenas/${arena.id}/opening-hours`,token));
     if(view==='prices'){const [rules, items]=await Promise.all([apiRequest<PricingRule[]>(`/owner/arenas/${arena.id}/pricing-rules`,token),apiRequest<Court[]>(`/owner/arenas/${arena.id}/courts`,token)]);setCourts(items);setData(rules)}
-  } catch(e){if(view==='courts'){setSportsLoading(false);setSportsError('Não foi possível carregar as modalidades.')}setError(e instanceof Error?e.message:'Nao foi possivel carregar esta tela.')} }
+  } catch(e){if(view==='courts'){setSportsLoading(false);setSportsError('Não foi possível carregar as modalidades.')}if(view==='arena'&&readOwnerArenaCache(session.user.id,arena.id)){setRefreshError(true);return;}setError(e instanceof Error?e.message:'Nao foi possivel carregar esta tela.')} }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(()=>{const id=window.setTimeout(()=>void load(),0);return()=>window.clearTimeout(id)},[arena?.id,session?.access_token,view]);
   if(!arena) return null;
   if(error) return <Card title={view==='prices'?'Não foi possível carregar os preços':'Nao foi possivel carregar'}><p className="text-[#FF4B4B]">{error}</p><button className="button mt-4" onClick={()=>void load()}>Tentar novamente</button></Card>;
   if(!data) return null;
-  const common={arena,token:session!.access_token,done:(message:string)=>{setNotice(message);void load()}};
+  const cacheArena=(updated:Arena)=>{if(userId)setOwnerArenaCache(userId,arena.id,updated)};
+  const common={arena,token:session!.access_token,done:(message:string,updated?:Arena)=>{setNotice(message);if(view==='arena'&&updated){cacheArena(updated);arenaEditorDirty.current=false;setRefreshError(false);setData(updated)}else void load()}};
   return <>{notice&&<p className="mb-4 rounded-2xl border border-[#8FFF3C]/30 bg-[#8FFF3C]/10 p-3 text-sm font-semibold text-[#8FFF3C]">{notice}</p>}
-    {view==='overview'&&<Overview summary={data as Summary}/>} {view==='arena'&&<ArenaEditor key={JSON.stringify(data)} {...common} initial={data as Arena}/>} {view==='courts'&&<Courts {...common} courts={courts} sports={sports} sportsLoading={sportsLoading} sportsError={sportsError}/>} {view==='hours'&&<OwnerHoursPanel key={JSON.stringify(data)} {...common} hours={data as OpeningHour[]}/>} {view==='prices'&&<OwnerPricesPanel key={JSON.stringify(data)} {...common} rules={data as PricingRule[]} courts={courts}/>}</>;
+    {refreshError&&<p className="mb-4 text-xs text-[#9DA7B3]" role="status">Não foi possível atualizar agora. Exibindo os últimos dados carregados.</p>}
+    {view==='overview'&&<Overview summary={data as Summary}/>} {view==='arena'&&<ArenaEditor cacheArena={cacheArena} key={JSON.stringify(data)} onDirty={()=>{arenaEditorDirty.current=true}} {...common} initial={data as Arena}/>} {view==='courts'&&<Courts {...common} courts={courts} sports={sports} sportsLoading={sportsLoading} sportsError={sportsError}/>} {view==='hours'&&<OwnerHoursPanel key={JSON.stringify(data)} {...common} hours={data as OpeningHour[]}/>} {view==='prices'&&<OwnerPricesPanel key={JSON.stringify(data)} {...common} rules={data as PricingRule[]} courts={courts}/>}</>;
 }
 function Card({title,children}:{title:string;children:React.ReactNode}){return <section className="rounded-[18px] border border-white/5 bg-[#111923] p-5 shadow-xl shadow-black/20"><h2 className="text-xl font-bold text-white">{title}</h2><div className="mt-3 text-sm leading-6 text-[#9DA7B3]">{children}</div></section>}
 function Overview({summary}:{summary:Summary}){const checks=[['Arena',true],['Campos',summary.court_count>0],['Horarios',summary.opening_hours_configured],['Precos',summary.pricing_rules_configured]];return <div className="space-y-5"><Card title={summary.arena.name}><p className="mb-4">Sua operacao society em um so lugar.</p><div className="grid grid-cols-2 gap-3"><Stat n={summary.court_count} t="quadras"/><Stat n={summary.sport_count} t="modalidades"/><Stat n={summary.opening_hours_configured?1:0} t="horarios prontos"/><Stat n={summary.pricing_rules_configured?1:0} t="precos prontos"/></div></Card><Card title="Configuracao"><div className="grid grid-cols-2 gap-3">{checks.map(([label,ok])=><div className={`rounded-xl p-3 font-bold ${ok?'bg-[#8FFF3C]/10 text-[#8FFF3C]':'bg-[#18212D] text-[#9DA7B3]'}`} key={label as string}>{ok?'✓':'○'} {label}</div>)}</div>{checks.every(([,ok])=>ok)&&<p className="mt-5 font-bold text-[#8FFF3C]">Sua arena esta pronta para receber reservas.</p>}</Card></div>}
@@ -44,7 +58,7 @@ function parseArenaCoordinate(value:string,min:number,max:number):number|null{
   const coordinate=Number(normalized);
   return Number.isFinite(coordinate)&&coordinate>=min&&coordinate<=max?coordinate:null;
 }
-function ArenaEditor({arena,token,initial,done}:{arena:Arena;token:string;initial:Arena;done:(m:string)=>void}){
+function ArenaEditor({arena,token,initial,done,cacheArena,onDirty}:{arena:Arena;token:string;initial:Arena;done:(m:string,updated?:Arena)=>void;cacheArena:(updated:Arena)=>void;onDirty:()=>void}){
   const [form,setForm]=useState(initial);
   const [positionSelected,setPositionSelected]=useState(false);
   const [positionBusy,setPositionBusy]=useState(false);
@@ -64,6 +78,7 @@ function ArenaEditor({arena,token,initial,done}:{arena:Arena;token:string;initia
       if(!Number.isFinite(position.coords.latitude)||!Number.isFinite(position.coords.longitude)||Math.abs(position.coords.latitude)>90||Math.abs(position.coords.longitude)>180){setPositionBusy(false);setPositionMessage('A posição recebida é inválida. Tente novamente.');return;}
       if(!Number.isFinite(position.coords.accuracy)||position.coords.accuracy>150){setPositionBusy(false);setPositionMessage('Precisão insuficiente para marcar a arena. Tente no local com GPS ativo.');return;}
       setForm(current=>({...current,latitude:position.coords.latitude,longitude:position.coords.longitude}));
+      onDirty();
       setPositionSelected(true);
       setPositionBusy(false);
       setPositionMessage('Posição obtida. Salve os dados da arena para confirmar.');
@@ -72,9 +87,9 @@ function ArenaEditor({arena,token,initial,done}:{arena:Arena;token:string;initia
   async function saveArena(){
     const {name,description,whatsapp,phone,address,city,state,latitude,longitude}=form;
     const payload={name,description,whatsapp,phone,address,city,state,...(positionSelected?{latitude,longitude}:{})};
-    await apiRequest(`/owner/arenas/${arena.id}`,token,{method:'PATCH',body:JSON.stringify(payload)});
+    const updated=await apiRequest<Arena>(`/owner/arenas/${arena.id}`,token,{method:'PATCH',body:JSON.stringify(payload)});
     setPositionSelected(false);
-    done('Dados da arena atualizados.');
+    done('Dados da arena atualizados.',updated);
   }
   async function saveManualLocation(){
     if(manualLock.current)return;
@@ -87,7 +102,8 @@ function ArenaEditor({arena,token,initial,done}:{arena:Arena;token:string;initia
     setManualBusy(true);
     setManualMessage('');
     try{
-      await apiRequest(`/owner/arenas/${arena.id}`,token,{method:'PATCH',body:JSON.stringify({latitude,longitude})});
+      const updated=await apiRequest<Arena>(`/owner/arenas/${arena.id}`,token,{method:'PATCH',body:JSON.stringify({latitude,longitude})});
+      cacheArena(updated);
       setForm(current=>({...current,latitude,longitude}));
       setPositionSelected(false);
       setManualSaved(true);
@@ -101,8 +117,8 @@ function ArenaEditor({arena,token,initial,done}:{arena:Arena;token:string;initia
     }
   }
   const addressChanged=form.address!==initial.address||form.city!==initial.city||form.state!==initial.state;
-  return <div className="space-y-4" data-owner-arena-editor><ArenaLogoManager arena={arena} initialPath={initial.logo_path} token={token} done={done}/><Save title="Dados da arena" action="Salvar alteracoes" onSave={saveArena}>
-    {['name','description','whatsapp','phone','address','city','state'].map(key=><label className="grid gap-1 capitalize" key={key}>{key}<input value={(form as unknown as Record<string,string>)[key]||''} onChange={e=>setForm({...form,[key]:e.target.value})}/></label>)}
+  return <div className="space-y-4" data-owner-arena-editor><ArenaLogoManager arena={arena} cacheArena={cacheArena} initialPath={initial.logo_path} version={initial.updated_at ?? arena.updated_at} token={token} done={done}/><Save title="Dados da arena" action="Salvar alteracoes" onSave={saveArena}>
+    {['name','description','whatsapp','phone','address','city','state'].map(key=><label className="grid gap-1 capitalize" key={key}>{key}<input value={(form as unknown as Record<string,string>)[key]||''} onChange={e=>{onDirty();setForm({...form,[key]:e.target.value})}}/></label>)}
     <div className="rounded-xl border border-white/[0.08] bg-[#18212D] p-3">
       <p className="text-[11px] font-extrabold uppercase tracking-[0.12em] text-[#D8E0E7]">Localização da arena</p>
       <p className="mt-2 text-xs text-[#9DA7B3]">{positionSelected?'Nova posição pronta para salvar.':addressChanged?'Ao salvar o novo endereço, a posição será recalculada se houver geocoder configurado.':manualSaved||typeof initial.latitude==='number'&&typeof initial.longitude==='number'?'Localização configurada':'Sem coordenadas: a arena aparece normalmente, mas depois das arenas com distância conhecida.'}</p>
@@ -122,7 +138,54 @@ function ArenaEditor({arena,token,initial,done}:{arena:Arena;token:string;initia
     </div>
   </Save></div>;
 }
-function ArenaLogoManager({arena,initialPath,token,done}:{arena:Arena;initialPath:string|null;token:string;done:(m:string)=>void}){const {refreshProfile}=useAuth();const input=useRef<HTMLInputElement>(null);const lock=useRef(false);const [path,setPath]=useState(initialPath);const [preview,setPreview]=useState<string|null>(null);const [error,setError]=useState('');const [busy,setBusy]=useState(false);const imageUrl=preview??getArenaLogoUrl(path,arena.updated_at);async function upload(file:File){if(lock.current)return;if(!ARENA_LOGO_MIME_TYPES.includes(file.type as (typeof ARENA_LOGO_MIME_TYPES)[number])){setError('Envie uma imagem PNG, JPEG ou WEBP.');return;}if(file.size>MAX_ARENA_LOGO_BYTES){setError('A imagem deve ter no máximo 5 MB.');return;}lock.current=true;setBusy(true);setError('');const nextPath=arenaLogoPath(arena.id,file.type);const localPreview=URL.createObjectURL(file);setPreview(localPreview);try{const {error:uploadError}=await supabase.storage.from(ARENA_ASSETS_BUCKET).upload(nextPath,file,{cacheControl:'3600',contentType:file.type,upsert:true});if(uploadError)throw uploadError;await apiRequest(`/owner/arenas/${arena.id}/logo`,token,{method:'PATCH',body:JSON.stringify({logo_path:nextPath})});setPath(nextPath);await refreshProfile();done('Logo da arena atualizada.')}catch(uploadError){setPreview(null);setError(uploadError instanceof Error?uploadError.message:'Não foi possível enviar a logo.')}finally{URL.revokeObjectURL(localPreview);lock.current=false;setBusy(false)}}async function remove(){if(lock.current||!path)return;lock.current=true;setBusy(true);setError('');const previousPath=path;try{await apiRequest(`/owner/arenas/${arena.id}/logo`,token,{method:'PATCH',body:JSON.stringify({logo_path:null})});const {error:removeError}=await supabase.storage.from(ARENA_ASSETS_BUCKET).remove([previousPath]);if(removeError)throw removeError;setPath(null);setPreview(null);await refreshProfile();done('Logo removida.')}catch(removeError){setError(removeError instanceof Error?removeError.message:'Não foi possível remover a logo.')}finally{lock.current=false;setBusy(false)}}return <section className="rounded-[18px] border border-white/5 bg-[#111923] p-5"><h2 className="text-xl font-bold">Identidade da arena</h2><p className="mt-1 text-sm text-[#9DA7B3]">Logo da arena</p><div className="mt-4 flex min-h-32 items-center justify-center rounded-2xl bg-[#18212D] p-5">{imageUrl?<img alt={`Logo de ${arena.name}`} className="max-h-[88px] max-w-full object-contain" src={imageUrl}/>:<div className="text-center"><b className="block text-white">{arena.name}</b><span className="mt-1 block text-xs text-[#9DA7B3]">Adicione a logo da sua arena</span></div>}</div>{error&&<p className="mt-3 text-sm font-semibold text-[#FF4B4B]">{error}</p>}<input accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={event=>{const file=event.target.files?.[0];event.currentTarget.value='';if(file)void upload(file)}} ref={input} type="file"/>{path?<div className="mt-4 grid grid-cols-2 gap-3"><button className="button" disabled={busy} onClick={()=>input.current?.click()} type="button">{busy?'Enviando...':'Trocar logo'}</button><button className="min-h-[52px] rounded-xl border border-[#FF4B4B]/40 px-3 text-sm font-bold text-[#FF4B4B]" disabled={busy} onClick={()=>void remove()} type="button">{busy?'Removendo...':'Remover'}</button></div>:<button className="button mt-4 w-full" disabled={busy} onClick={()=>input.current?.click()} type="button">{busy?'Enviando...':'Escolher imagem'}</button>}</section>}
+function ArenaLogoManager({arena,initialPath,version,token,done,cacheArena}:{arena:Arena;initialPath:string|null;version?:string;token:string;done:(m:string,updated?:Arena)=>void;cacheArena:(updated:Arena)=>void}){
+  const {refreshProfile}=useAuth();
+  const input=useRef<HTMLInputElement>(null);
+  const lock=useRef(false);
+  const [path,setPath]=useState(initialPath);
+  const [preview,setPreview]=useState<string|null>(null);
+  const [error,setError]=useState('');
+  const [busy,setBusy]=useState(false);
+  const imageUrl=preview??getArenaLogoUrl(path,version);
+  async function upload(file:File){
+    if(lock.current)return;
+    if(!ARENA_LOGO_MIME_TYPES.includes(file.type as (typeof ARENA_LOGO_MIME_TYPES)[number])){setError('Envie uma imagem PNG, JPEG ou WEBP.');return;}
+    if(file.size>MAX_ARENA_LOGO_BYTES){setError('A imagem deve ter no máximo 5 MB.');return;}
+    lock.current=true;setBusy(true);setError('');
+    const nextPath=arenaLogoPath(arena.id,file.type);
+    const localPreview=URL.createObjectURL(file);
+    setPreview(localPreview);
+    try{
+      const {error:uploadError}=await supabase.storage.from(ARENA_ASSETS_BUCKET).upload(nextPath,file,{cacheControl:'3600',contentType:file.type,upsert:true});
+      if(uploadError)throw uploadError;
+      const updated=await apiRequest<Arena>(`/owner/arenas/${arena.id}/logo`,token,{method:'PATCH',body:JSON.stringify({logo_path:nextPath})});
+      const latest={...arena,...updated,updated_at:new Date().toISOString()};
+      cacheArena(latest);
+      setPath(nextPath);
+      await refreshProfile();
+      done('Logo da arena atualizada.',latest);
+    }catch(uploadError){setPreview(null);setError(uploadError instanceof Error?uploadError.message:'Não foi possível enviar a logo.');}
+    finally{URL.revokeObjectURL(localPreview);lock.current=false;setBusy(false);}
+  }
+  async function remove(){
+    if(lock.current||!path)return;
+    lock.current=true;setBusy(true);setError('');
+    const previousPath=path;
+    try{
+      const updated=await apiRequest<Arena>(`/owner/arenas/${arena.id}/logo`,token,{method:'PATCH',body:JSON.stringify({logo_path:null})});
+      const latest={...arena,...updated};
+      cacheArena(latest);
+      setPath(null);
+      setPreview(null);
+      const {error:removeError}=await supabase.storage.from(ARENA_ASSETS_BUCKET).remove([previousPath]);
+      if(removeError)throw removeError;
+      await refreshProfile();
+      done('Logo removida.',latest);
+    }catch(removeError){setError(removeError instanceof Error?removeError.message:'Não foi possível remover a logo.');}
+    finally{lock.current=false;setBusy(false);}
+  }
+  return <section className="rounded-[18px] border border-white/5 bg-[#111923] p-5"><h2 className="text-xl font-bold">Identidade da arena</h2><p className="mt-1 text-sm text-[#9DA7B3]">Logo da arena</p><div className="mt-4 flex min-h-32 items-center justify-center rounded-2xl bg-[#18212D] p-5">{imageUrl?<img alt={`Logo de ${arena.name}`} className="max-h-[88px] max-w-full object-contain" src={imageUrl}/>:<div className="text-center"><b className="block text-white">{arena.name}</b><span className="mt-1 block text-xs text-[#9DA7B3]">Adicione a logo da sua arena</span></div>}</div>{error&&<p className="mt-3 text-sm font-semibold text-[#FF4B4B]">{error}</p>}<input accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={event=>{const file=event.target.files?.[0];event.currentTarget.value='';if(file)void upload(file)}} ref={input} type="file"/>{path?<div className="mt-4 grid grid-cols-2 gap-3"><button className="button" disabled={busy} onClick={()=>input.current?.click()} type="button">{busy?'Enviando...':'Trocar logo'}</button><button className="min-h-[52px] rounded-xl border border-[#FF4B4B]/40 px-3 text-sm font-bold text-[#FF4B4B]" disabled={busy} onClick={()=>void remove()} type="button">{busy?'Removendo...':'Remover'}</button></div>:<button className="button mt-4 w-full" disabled={busy} onClick={()=>input.current?.click()} type="button">{busy?'Enviando...':'Escolher imagem'}</button>}</section>;
+}
 function Courts({arena,token,courts,sports,sportsLoading,sportsError,done}:{arena:Arena;token:string;courts:Court[];sports:Sport[];sportsLoading:boolean;sportsError:string|null;done:(m:string)=>void}){const society=sports.find(s=>s.slug==='society'||s.name.toLowerCase()==='society');const [name,setName]=useState('');const [selected,setSelected]=useState<number[]>(()=>society?[society.id]:[]);const [validation,setValidation]=useState('');const toggle=(id:number)=>setSelected(current=>current.includes(id)?current.filter(item=>item!==id):[...current,id]);async function create(){if(!selected.length){setValidation('Selecione pelo menos uma modalidade.');return;}setValidation('');await apiRequest(`/owner/arenas/${arena.id}/courts`,token,{method:'POST',body:JSON.stringify({name,default_duration_minutes:60,active:true,sport_ids:selected})});setName('');setSelected(society?[society.id]:[]);done('Campo criado.')}const sportContent=sportsLoading?<p className="rounded-xl bg-[#18212D] p-3 text-sm text-[#9DA7B3]">Carregando modalidades...</p>:sportsError?<p className="rounded-xl bg-[#FF4B4B]/10 p-3 text-sm text-[#FF4B4B]">{sportsError}</p>:sports.length===0?<p className="rounded-xl bg-[#18212D] p-3 text-sm text-[#9DA7B3]">Nenhuma modalidade cadastrada.</p>:<SportPicker selected={selected} sports={sports} onToggle={toggle}/>;return <div className="space-y-4"><Save title="Adicionar campo society" action="Criar campo" onSave={create}><label className="grid gap-1">Nome do campo<input placeholder="Ex.: Campo Society 1" value={name} onChange={e=>setName(e.target.value)}/></label><p>Duração padrão: <b className="text-white">60 minutos</b></p><p className="font-bold text-white">Modalidade</p>{sportContent}{validation&&<p className="text-sm font-semibold text-[#FF4B4B]">{validation}</p>}</Save>{courts.length===0?<Card title="Nenhum campo cadastrado">Adicione seu primeiro campo para continuar.</Card>:courts.map(c=><CourtCard court={c} key={c.id} sports={sports} token={token} done={done}/>)}</div>}
 function SportPicker({sports,selected,onToggle}:{sports:Sport[];selected:number[];onToggle:(id:number)=>void}){return <div className="grid grid-cols-2 gap-2">{sports.map(s=><button aria-pressed={selected.includes(s.id)} className={`min-h-[48px] rounded-xl p-3 text-left font-bold ${selected.includes(s.id)?'bg-[#8FFF3C] text-[#080D14]':'bg-[#18212D] text-white'}`} key={s.id} onClick={()=>onToggle(s.id)} type="button">{s.name}</button>)}</div>}
 function CourtCard({court,sports,token,done}:{court:Court;sports:Sport[];token:string;done:(m:string)=>void}){const [selected,setSelected]=useState(court.sports.map(s=>s.id));const [busy,setBusy]=useState(false);const [validation,setValidation]=useState('');const toggle=(id:number)=>setSelected(current=>current.includes(id)?current.filter(item=>item!==id):[...current,id]);async function saveSports(){if(court.active&&!selected.length){setValidation('Selecione pelo menos uma modalidade.');return;}setBusy(true);try{await apiRequest(`/owner/courts/${court.id}/sports`,token,{method:'PUT',body:JSON.stringify({sport_ids:selected})});done('Modalidades atualizadas.')}finally{setBusy(false)}}return <Card title={court.name}><p className="font-semibold text-[#8FFF3C]">{court.sports.map(s=>s.name).join(', ')||'Sem modalidade configurada'} · {court.default_duration_minutes} min · {court.active?'Ativo':'Inativo'}</p><div className="mt-4"><p className="mb-2 text-sm font-bold text-white">Modalidades</p><SportPicker selected={selected} sports={sports} onToggle={toggle}/>{validation&&<p className="mt-2 text-sm font-semibold text-[#FF4B4B]">{validation}</p>}<button className="button mt-3 w-full" disabled={busy} onClick={()=>void saveSports()}>{busy?'Salvando...':'Salvar modalidades'}</button></div><button className="mt-3 min-h-[44px] text-sm font-bold text-[#9DA7B3]" disabled={busy} onClick={async()=>{if(court.active&&!selected.length){setValidation('Selecione pelo menos uma modalidade antes de ativar a quadra.');return;}setBusy(true);try{await apiRequest(`/owner/courts/${court.id}`,token,{method:'PATCH',body:JSON.stringify({active:!court.active})});done(court.active?'Campo desativado.':'Campo ativado.')}finally{setBusy(false)}}}>{court.active?'Desativar campo':'Ativar campo'}</button></Card>}

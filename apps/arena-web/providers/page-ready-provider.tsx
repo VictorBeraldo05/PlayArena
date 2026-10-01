@@ -8,6 +8,7 @@ import { usePathname } from 'next/navigation';
 
 import { useAuth } from '../components/use-auth';
 import { trackEvent } from '../lib/analytics';
+import { readOwnerArenaCache } from '../lib/owner-arena-cache';
 
 type PageReadyContextValue = { register: (id: string) => () => void; resolve: (id: string) => void };
 type LoaderVariant = 'initial' | 'navigation';
@@ -18,7 +19,10 @@ const MAXIMUM_LOADER_MS = 5000;
 
 export function PageReadyProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { isLoading: authLoading } = useAuth();
+  const { isLoading: authLoading, session, ownedArenas } = useAuth();
+  const userId = session?.user.id;
+  const arenaId = ownedArenas[0]?.id;
+  const warmOwnerArena = pathname === '/dashboard/arena' && Boolean(userId && arenaId && readOwnerArenaCache(userId, arenaId));
   const routeRef = useRef(pathname);
   const resourcesRef = useRef(new Map<string, boolean>());
   const startedAtRef = useRef(Date.now());
@@ -27,6 +31,7 @@ export function PageReadyProvider({ children }: { children: React.ReactNode }) {
   const authLoadingRef = useRef(authLoading);
   const isLandingRef = useRef(pathname === '/');
   const isOwnerRef = useRef(pathname.startsWith('/dashboard'));
+  const warmOwnerArenaRef = useRef(warmOwnerArena);
   const hasVisitedRouteRef = useRef(pathname === '/');
   const [isLoading, setIsLoading] = useState(pathname !== '/');
   const [loaderVariant, setLoaderVariant] = useState<LoaderVariant>(pathname === '/' ? 'navigation' : 'initial');
@@ -35,6 +40,7 @@ export function PageReadyProvider({ children }: { children: React.ReactNode }) {
   authLoadingRef.current = authLoading;
   isLandingRef.current = isLanding;
   isOwnerRef.current = pathname.startsWith('/dashboard');
+  warmOwnerArenaRef.current = warmOwnerArena;
 
   if (routeRef.current !== pathname) {
     routeRef.current = pathname;
@@ -61,6 +67,7 @@ export function PageReadyProvider({ children }: { children: React.ReactNode }) {
     setLoaderVariant(hasVisitedRouteRef.current ? 'navigation' : 'initial');
     hasVisitedRouteRef.current = true;
     startedAtRef.current = Date.now();
+    if (warmOwnerArenaRef.current) { setIsLoading(false); return; }
     setIsLoading(true);
     if (!isOwnerRef.current) timeoutRef.current = window.setTimeout(() => setIsLoading(false), MAXIMUM_LOADER_MS);
     const task = window.setTimeout(evaluate, 0);
@@ -76,6 +83,7 @@ export function PageReadyProvider({ children }: { children: React.ReactNode }) {
       if (!target || target.target === '_blank' || target.hasAttribute('download')) return;
       const url = new URL(target.href, window.location.href);
       if (url.origin !== window.location.origin || url.pathname === pathname) return;
+      if (url.pathname === '/dashboard/arena' && userId && arenaId && readOwnerArenaCache(userId, arenaId)) return;
       startedAtRef.current = Date.now();
       if (completionTimeoutRef.current) window.clearTimeout(completionTimeoutRef.current);
       setLoaderVariant('navigation');
@@ -83,7 +91,7 @@ export function PageReadyProvider({ children }: { children: React.ReactNode }) {
     }
     document.addEventListener('click', beginLinkedNavigation, true);
     return () => document.removeEventListener('click', beginLinkedNavigation, true);
-  }, [pathname]);
+  }, [arenaId, pathname, userId]);
   useEffect(() => {
     document.body.style.overflow = isLoading ? 'hidden' : '';
     return () => { document.body.style.overflow = ''; };
@@ -92,7 +100,7 @@ export function PageReadyProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<PageReadyContextValue>(() => ({
     register(id) {
       resourcesRef.current.set(id, false);
-      if (isOwnerRef.current) setIsLoading(true);
+      if (isOwnerRef.current && !warmOwnerArenaRef.current) setIsLoading(true);
       setRevision((value) => value + 1);
       return () => { resourcesRef.current.delete(id); setRevision((value) => value + 1); };
     },
