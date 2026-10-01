@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 import { ArenaAvailabilityGroup, ArenaResultCard, AvailabilityOption } from '../../../components/arena-result-card';
@@ -42,13 +42,15 @@ function ResultsPage() {
   const [reloadVersion, setReloadVersion] = useState(0);
   const [sortMode, setSortMode] = useState<'default' | 'distance' | 'price'>('default');
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
-  const [locationState, setLocationState] = useState<'idle' | 'prompt' | 'loading' | 'denied' | 'unavailable' | 'timeout'>('idle');
+  const [locationState, setLocationState] = useState<'idle' | 'loading' | 'denied' | 'unavailable' | 'timeout'>('idle');
   const [coordinates, setCoordinates] = useState<{ latitude: number; longitude: number } | null>(null);
   const [sortError, setSortError] = useState(false);
   const searchKey = [city, sport, day, time, arenaId, courtId].join('|');
   const searchKeyRef = useRef(searchKey);
   const hasItemsRef = useRef(false);
   const sortMenuRef = useRef<HTMLDivElement>(null);
+  const locationRequestRef = useRef(false);
+  const manualSortChosenRef = useRef(false);
   const backParams = new URLSearchParams({ sport });
   if (city) backParams.set('city', city);
   if (arenaId) backParams.set('arenaId', arenaId);
@@ -106,39 +108,48 @@ function ResultsPage() {
     return () => { cancelled = true; window.clearTimeout(task); };
   }, [arenaId, city, coordinates, courtId, day, reloadVersion, searchKey, sortMode, sport, time]);
 
-  function requestLocation() {
-    if (!navigator.geolocation || !window.isSecureContext) { setLocationState('unavailable'); return; }
+  const requestLocation = useCallback(() => {
+    if (locationRequestRef.current) return;
+    const failLocation = (state: 'denied' | 'unavailable' | 'timeout') => {
+      locationRequestRef.current = false;
+      setCoordinates(null);
+      setSortMode((current) => current === 'distance' ? 'default' : current);
+      setLocationState(state);
+    };
+    if (!navigator.geolocation || !window.isSecureContext) { failLocation('unavailable'); return; }
+    locationRequestRef.current = true;
     setLocationState('loading');
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const latitude = Math.round(position.coords.latitude * 1000) / 1000;
-        const longitude = Math.round(position.coords.longitude * 1000) / 1000;
-        if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
-          setLocationState('unavailable');
-          return;
-        }
-        setCoordinates({ latitude, longitude });
-        setSortMode('distance');
-        setLocationState('idle');
-        setSortMenuOpen(false);
-      },
-      (positionError) => {
-        setLocationState(positionError.code === 1 ? 'denied' : positionError.code === 3 ? 'timeout' : 'unavailable');
-      },
-      { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 },
-    );
-  }
-
-  async function selectDistance() {
-    if (coordinates) { setSortMode('distance'); setSortMenuOpen(false); return; }
-    if (!navigator.geolocation || !window.isSecureContext) { setLocationState('unavailable'); return; }
     try {
-      const permission = await navigator.permissions?.query({ name: 'geolocation' });
-      if (permission?.state === 'granted') { requestLocation(); return; }
-      setLocationState(permission?.state === 'denied' ? 'denied' : 'prompt');
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          locationRequestRef.current = false;
+          const latitude = Math.round(position.coords.latitude * 1000) / 1000;
+          const longitude = Math.round(position.coords.longitude * 1000) / 1000;
+          if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+            failLocation('unavailable');
+            return;
+          }
+          setCoordinates({ latitude, longitude });
+          if (!manualSortChosenRef.current) setSortMode('distance');
+          setLocationState('idle');
+          setSortMenuOpen(false);
+        },
+        (positionError) => {
+          failLocation(positionError.code === 1 ? 'denied' : positionError.code === 3 ? 'timeout' : 'unavailable');
+        },
+        { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 },
+      );
     } catch {
-      setLocationState('prompt');
+      failLocation('unavailable');
     }
+  }, [setCoordinates, setLocationState, setSortMenuOpen, setSortMode]);
+
+  useEffect(() => { const task = window.setTimeout(requestLocation, 0); return () => window.clearTimeout(task); }, [requestLocation]);
+
+  function selectDistance() {
+    manualSortChosenRef.current = false;
+    if (coordinates) { setSortMode('distance'); setSortMenuOpen(false); return; }
+    requestLocation();
   }
 
   function reserve(option: AvailabilityOption) {
@@ -174,18 +185,18 @@ function ResultsPage() {
       </header>
       <section aria-label="Controles de resultados" className="mt-5 flex items-center justify-between gap-3">
         <div className="relative" ref={sortMenuRef}>
-          <button aria-controls="results-sort-menu" aria-expanded={sortMenuOpen} aria-haspopup="true" className="flex min-h-10 items-center gap-2 rounded-xl border border-white/[0.09] bg-[#18212D] px-3.5 text-[12px] font-bold text-[#E8EDF1] transition-colors hover:border-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" onClick={() => setSortMenuOpen((open) => !open)} type="button">{sortMode === 'distance' ? 'Mais perto' : sortMode === 'price' ? 'Menor preço' : 'Ordenar por'} <span aria-hidden="true" className={`text-[#9DA7B3] transition-transform ${sortMenuOpen ? 'rotate-180' : ''}`}>⌄</span></button>
+          <button aria-controls="results-sort-menu" aria-expanded={sortMenuOpen} aria-haspopup="true" className="flex min-h-10 items-center gap-2 rounded-xl border border-white/[0.09] bg-[#18212D] px-3.5 text-[12px] font-bold text-[#E8EDF1] transition-colors hover:border-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" onClick={() => setSortMenuOpen((open) => !open)} type="button">{sortMode === 'distance' ? 'Mais perto' : sortMode === 'price' ? 'Menor preço' : locationState === 'loading' ? 'Localizando...' : locationState !== 'idle' ? 'Tentar localização' : 'Ordenar por'} <span aria-hidden="true" className={`text-[#9DA7B3] transition-transform ${sortMenuOpen ? 'rotate-180' : ''}`}>⌄</span></button>
           {sortMenuOpen ? <div className="absolute left-0 top-full z-30 mt-2 w-[min(320px,calc(100vw-32px))] rounded-[18px] border border-white/[0.12] bg-[#14202B] p-2.5 shadow-[0_20px_45px_rgba(0,0,0,0.5)]" id="results-sort-menu">
             <p className="px-2.5 pb-1.5 pt-1 text-[10px] font-extrabold uppercase tracking-[0.16em] text-[#92A0AD]">Ordenar por</p>
-            <button aria-pressed={sortMode === 'default'} className="flex min-h-11 w-full items-center justify-between rounded-xl px-2.5 text-left text-[13px] font-semibold text-white transition-colors hover:bg-white/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" onClick={() => { setSortMode('default'); setSortMenuOpen(false); setSortError(false); }} type="button">Ordem padrão <span aria-hidden="true" className={sortMode === 'default' ? 'text-[#8FFF3C]' : 'text-[#63717D]'}>{sortMode === 'default' ? '●' : '○'}</span></button>
-            <button aria-pressed={sortMode === 'distance'} className="flex min-h-11 w-full items-center justify-between rounded-xl px-2.5 text-left text-[13px] font-semibold text-white transition-colors hover:bg-white/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" onClick={() => void selectDistance()} type="button">Mais perto <span aria-hidden="true" className={sortMode === 'distance' ? 'text-[#8FFF3C]' : 'text-[#63717D]'}>{sortMode === 'distance' ? '●' : '○'}</span></button>
-            <button aria-pressed={sortMode === 'price'} className="flex min-h-11 w-full items-center justify-between rounded-xl px-2.5 text-left text-[13px] font-semibold text-white transition-colors hover:bg-white/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" onClick={() => { setSortMode('price'); setSortMenuOpen(false); setSortError(false); }} type="button">Menor preço <span aria-hidden="true" className={sortMode === 'price' ? 'text-[#8FFF3C]' : 'text-[#63717D]'}>{sortMode === 'price' ? '●' : '○'}</span></button>
+            <button aria-pressed={sortMode === 'default'} className="flex min-h-11 w-full items-center justify-between rounded-xl px-2.5 text-left text-[13px] font-semibold text-white transition-colors hover:bg-white/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" onClick={() => { manualSortChosenRef.current = true; setSortMode('default'); setSortMenuOpen(false); setSortError(false); }} type="button">Ordem padrão <span aria-hidden="true" className={sortMode === 'default' ? 'text-[#8FFF3C]' : 'text-[#63717D]'}>{sortMode === 'default' ? '●' : '○'}</span></button>
+            <button aria-pressed={sortMode === 'distance'} className="flex min-h-11 w-full items-center justify-between rounded-xl px-2.5 text-left text-[13px] font-semibold text-white transition-colors hover:bg-white/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" onClick={selectDistance} type="button">Mais perto <span aria-hidden="true" className={sortMode === 'distance' ? 'text-[#8FFF3C]' : 'text-[#63717D]'}>{sortMode === 'distance' ? '●' : '○'}</span></button>
+            <button aria-pressed={sortMode === 'price'} className="flex min-h-11 w-full items-center justify-between rounded-xl px-2.5 text-left text-[13px] font-semibold text-white transition-colors hover:bg-white/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" onClick={() => { manualSortChosenRef.current = true; setSortMode('price'); setSortMenuOpen(false); setSortError(false); }} type="button">Menor preço <span aria-hidden="true" className={sortMode === 'price' ? 'text-[#8FFF3C]' : 'text-[#63717D]'}>{sortMode === 'price' ? '●' : '○'}</span></button>
             {locationState !== 'idle' ? <div className="mt-2 rounded-xl border border-white/[0.07] bg-[#0E1821] px-3 py-3" role="status">
-              <p className="text-[12px] font-bold text-white">{locationState === 'prompt' ? 'Encontre as arenas mais próximas' : locationState === 'loading' ? 'Localizando...' : 'Não foi possível acessar sua localização'}</p>
-              <p className="mt-1 text-[11px] leading-4 text-[#9DA7B3]">{locationState === 'prompt' ? 'Use sua localização para ordenar estes resultados por distância.' : locationState === 'denied' ? 'Confira a permissão do navegador. Você ainda pode buscar normalmente.' : locationState === 'timeout' ? 'A localização demorou para responder. Sua busca continua disponível.' : locationState === 'loading' ? 'Mantemos os resultados visíveis enquanto buscamos sua posição.' : 'Seu navegador não disponibilizou a localização. Sua busca continua disponível.'}</p>
-              {locationState !== 'loading' ? <button className="mt-2 min-h-11 w-full rounded-xl bg-[#8FFF3C] px-3 text-[12px] font-extrabold text-[#080D14] transition hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white" onClick={requestLocation} type="button">{locationState === 'prompt' ? 'Usar minha localização' : 'Tentar novamente'}</button> : null}
+              <p className="text-[12px] font-bold text-white">{locationState === 'loading' ? 'Localizando...' : 'Não foi possível acessar sua localização'}</p>
+              <p className="mt-1 text-[11px] leading-4 text-[#9DA7B3]">{locationState === 'denied' ? 'Confira a permissão do navegador. Você ainda pode buscar normalmente.' : locationState === 'timeout' ? 'A localização demorou para responder. Sua busca continua disponível.' : locationState === 'loading' ? 'Mantemos os resultados visíveis enquanto buscamos sua posição.' : 'Seu navegador não disponibilizou a localização. Sua busca continua disponível.'}</p>
+              {locationState !== 'loading' ? <button className="mt-2 min-h-11 w-full rounded-xl bg-[#8FFF3C] px-3 text-[12px] font-extrabold text-[#080D14] transition hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white" onClick={() => { manualSortChosenRef.current = false; requestLocation(); }} type="button">Tentar novamente</button> : null}
             </div> : null}
-            {coordinates ? <button className="mt-1 min-h-11 w-full rounded-xl px-2.5 text-left text-[11px] font-semibold text-[#A5D7B0] hover:bg-white/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" onClick={requestLocation} type="button">Atualizar localização</button> : null}
+            {coordinates ? <button className="mt-1 min-h-11 w-full rounded-xl px-2.5 text-left text-[11px] font-semibold text-[#A5D7B0] hover:bg-white/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" onClick={() => { manualSortChosenRef.current = false; requestLocation(); }} type="button">Atualizar localização</button> : null}
           </div> : null}
         </div>
         <button className="flex min-h-10 items-center gap-2 rounded-xl border border-white/[0.09] px-3.5 text-[12px] font-bold text-[#E8EDF1] transition-colors hover:border-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" type="button"><svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M4 7h16M7 12h10M10 17h4" /></svg>Filtros</button>
