@@ -10,10 +10,10 @@ import { ArenaMedia } from '../../../../../components/arena-media';
 import { PlayerBottomNav, usePlayerBottomNavigation } from '../../../../../components/player-bottom-nav';
 import { trackEvent } from '../../../../../lib/analytics';
 import { BRAZIL_TIME_ZONE, formatCurrencyBRL, formatTimeBR, todayInSaoPaulo } from '../../../../../lib/format';
+import { fetchPublicArena, readPublicArenaCache, type PublicArena } from '../../../../../lib/public-arena-cache';
 import { usePageReadyResource } from '../../../../../providers/page-ready-provider';
 
-type Court = { id: string; name: string; default_duration_minutes: number; sports: string[] };
-type Arena = { name: string; city: string; logo_path?: string | null; courts: Court[] };
+type Court = PublicArena['courts'][number];
 type SlotStatus = 'available' | 'reserved' | 'blocked' | 'past' | 'unavailable';
 type ScheduleSlot = { court_id: string; start_at: string; end_at: string; duration_minutes: number; status: SlotStatus; price: string | number | null };
 type Schedule = { arena_id: string; day: string; is_open: boolean; courts: Court[]; slots: ScheduleSlot[] };
@@ -31,7 +31,7 @@ function ArenaSchedulePage() {
   const [day, setDay] = useState(today);
   const [stripStart, setStripStart] = useState(today);
   const [selectedCourtId, setSelectedCourtId] = useState(searchParams.get('courtId') ?? '');
-  const [arena, setArena] = useState<Arena | null>(null);
+  const [arena, setArena] = useState<PublicArena | null>(() => readPublicArenaCache(id));
   const [arenaError, setArenaError] = useState('');
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [scheduleError, setScheduleError] = useState('');
@@ -49,8 +49,11 @@ function ArenaSchedulePage() {
     let cancelled = false;
     const base = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
     setArenaError('');
-    void fetch(`${base}/arenas/${id}`, { cache: 'no-store' })
-      .then((response) => response.ok ? response.json() as Promise<Arena> : Promise.reject())
+    void fetchPublicArena(id, async () => {
+      const response = await fetch(`${base}/arenas/${id}`, { cache: 'no-store' });
+      if (!response.ok) throw new Error('arena_fetch_failed');
+      return response.json() as Promise<PublicArena>;
+    })
       .then((result) => { if (!cancelled) setArena(result); })
       .catch(() => { if (!cancelled) setArenaError('Não foi possível carregar esta arena.'); });
     return () => { cancelled = true; };

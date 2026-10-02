@@ -7,7 +7,6 @@ import { ArenaAvailabilityGroup, ArenaResultCard, AvailabilityOption } from '../
 import { PublicBottomNavigation } from '../../../components/public-bottom-navigation';
 import { usePlayerBottomNavigation } from '../../../components/player-bottom-nav';
 import { formatDateBR, todayInSaoPaulo } from '../../../lib/format';
-import { PageReadyGate } from '../../../providers/page-ready-provider';
 import { trackEvent } from '../../../lib/analytics';
 
 function groupByArena(options: AvailabilityOption[]): ArenaAvailabilityGroup[] {
@@ -176,7 +175,6 @@ function ResultsPage() {
   const resultCount = items ? `${items.length} ${items.length === 1 ? 'opção' : 'opções'} em ${groups.length} ${groups.length === 1 ? 'arena' : 'arenas'}` : '';
 
   return <main className={`min-h-[100dvh] bg-[#080D14] text-white ${showPlayerNavigation ? 'pb-24' : 'pb-[env(safe-area-inset-bottom)]'}`}>
-    <PageReadyGate ready={items !== null || error} resourceId="availability" />
     <div className="mx-auto w-full max-w-[640px] px-4 pb-6 pt-4 sm:px-5">
       <header className="grid grid-cols-[44px_minmax(0,1fr)_44px] items-center">
         <button aria-label="Voltar para escolher horário" className="grid min-h-11 place-items-center rounded-xl text-[#9DA7B3] transition-colors hover:bg-white/5 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#8FFF3C]" onClick={() => router.push(backToSearch)} type="button"><svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></svg></button>
@@ -207,7 +205,7 @@ function ResultsPage() {
         {items === null && !error ? <><ResultSkeleton /><ResultSkeleton /></> : null}
         {error ? <div className="rounded-[19px] border border-white/10 bg-[#111923] p-6 text-center"><h2 className="text-lg font-black">Não foi possível carregar as arenas.</h2><button className="mt-4 min-h-12 rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14]" onClick={() => setReloadVersion((version) => version + 1)} type="button">Tentar novamente</button></div> : null}
         {items && groups.length === 0 ? <div className="rounded-[19px] border border-white/10 bg-[#111923] p-6 text-center"><h2 className="text-xl font-black">Nenhum campo disponível</h2><p className="mt-2 text-sm text-[#9DA7B3]">Não encontramos campos para esse horário.</p><button className="mt-5 min-h-12 rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14]" onClick={() => router.push(backToSearch)} type="button">Escolher outro horário</button></div> : null}
-        {groups.map((group, index) => <ArenaResultCard criticalMedia={index === 0} group={group} key={group.id} onReserve={reserve} searchedTime={time} sportName={sport} />)}
+        {groups.map((group, index) => <ArenaResultCard group={group} key={group.id} onReserve={reserve} priorityMedia={index === 0} searchedTime={time} sportName={sport} />)}
       </section>
     </div>
     <PublicBottomNavigation />

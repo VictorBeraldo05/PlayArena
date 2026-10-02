@@ -67,7 +67,8 @@ def enforce_owner_mutation_limit(request: Request, current_user: AuthenticatedUs
 
 
 @sports_router.get("/sports", response_model=list[SportResponse])
-def get_sports() -> list[dict]:
+def get_sports(response: Response) -> list[dict]:
+    response.headers["Cache-Control"] = "public, max-age=300"
     return owner_repository.list_sports()
 
 

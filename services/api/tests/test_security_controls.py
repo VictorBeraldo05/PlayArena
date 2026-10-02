@@ -22,6 +22,21 @@ def test_api_sets_private_response_security_headers(create_client) -> None:
     assert {"Authorization", "Origin"}.issubset(set(response.headers["vary"].replace(" ", "").split(",")))
 
 
+def test_performance_timing_is_opt_in_and_uses_route_template(create_client, monkeypatch, caplog) -> None:
+    monkeypatch.setattr(settings, "performance_request_logging", False)
+    assert "server-timing" not in create_client.get("/health").headers
+
+    monkeypatch.setattr(settings, "performance_request_logging", True)
+    with caplog.at_level("INFO", logger="app.main"):
+        response = create_client.get("/arenas/not-a-uuid?secret=must-not-appear")
+
+    assert response.status_code == 422
+    assert response.headers["server-timing"].startswith("app;dur=")
+    assert "path=/arenas/{arena_id}" in caplog.text
+    assert "secret=must-not-appear" not in caplog.text
+    assert "not-a-uuid" not in caplog.text
+
+
 def test_api_docs_are_disabled_by_default(monkeypatch) -> None:
     monkeypatch.delenv("API_DOCS_ENABLED", raising=False)
 
@@ -67,6 +82,7 @@ def test_cors_decorates_allowed_sports_response(create_client, monkeypatch) -> N
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "https://useplayarena.com.br"
+    assert response.headers["cache-control"] == "public, max-age=300"
 
 
 def test_cors_decorates_early_error_response(create_client) -> None:

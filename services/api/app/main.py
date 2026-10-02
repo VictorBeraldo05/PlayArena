@@ -1,4 +1,5 @@
 import logging
+from time import perf_counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -67,7 +68,21 @@ def create_application() -> FastAPI:
         if content_length and content_length.isdigit() and int(content_length) > settings.max_request_body_bytes:
             return JSONResponse(status_code=413, content={"detail": "Request body is too large."})
 
-        response = await call_next(request)
+        started = perf_counter() if settings.performance_request_logging else None
+        try:
+            response = await call_next(request)
+        except Exception:
+            if started is not None:
+                route = request.scope.get("route")
+                route_path = getattr(route, "path", "unmatched")
+                logger.warning("performance.request method=%s path=%s status=500 duration_ms=%.1f", request.method, route_path, (perf_counter() - started) * 1000)
+            raise
+        if started is not None:
+            duration_ms = (perf_counter() - started) * 1000
+            route = request.scope.get("route")
+            route_path = getattr(route, "path", "unmatched")
+            logger.warning("performance.request method=%s path=%s status=%s duration_ms=%.1f", request.method, route_path, response.status_code, duration_ms)
+            response.headers["Server-Timing"] = f"app;dur={duration_ms:.1f}"
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("X-Frame-Options", "DENY")

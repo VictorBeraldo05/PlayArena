@@ -7,7 +7,6 @@ import { formatCurrencyBRL } from '../lib/format';
 import { PlayerBottomNav, usePlayerBottomNavigation } from './player-bottom-nav';
 import { ArenaMedia } from './arena-media';
 import { useAuth } from './use-auth';
-import { usePageReadyResource } from '../providers/page-ready-provider';
 
 type Sport = { id: number; name: string; slug: string };
 type Arena = { id: string; name: string; city: string; description: string | null; logo_path?: string | null; court_count: number; sports: string[]; price_from: number | string | null };
@@ -23,7 +22,6 @@ export function PlayerDiscoveryHome() {
   const [arenasError, setArenasError] = useState('');
   const [sportsError, setSportsError] = useState('');
   const city = 'Piracicaba';
-  usePageReadyResource('discovery-data', !loading);
 
   async function loadDiscovery() {
     setLoading(true);
@@ -32,7 +30,7 @@ export function PlayerDiscoveryHome() {
     try {
       const base = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
       const [sportsResult, arenasResult] = await Promise.allSettled([
-        fetch(`${base}/sports`, { cache: 'no-store' }),
+        fetch(`${base}/sports`),
         fetch(`${base}/arenas?city=${encodeURIComponent(city)}`, { cache: 'no-store' }),
       ]);
       if (sportsResult.status === 'fulfilled' && sportsResult.value.ok) setSports(await sportsResult.value.json() as Sport[]);

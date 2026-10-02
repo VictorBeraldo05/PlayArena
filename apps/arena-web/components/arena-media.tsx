@@ -7,6 +7,7 @@
 /* eslint-disable @next/next/no-img-element */
 
 import { useEffect, useId, useRef, useState } from 'react';
+import Image from 'next/image';
 
 import { getArenaLogoUrl } from '../lib/arena-logo';
 import { PageReadyGate } from '../providers/page-ready-provider';
@@ -45,6 +46,8 @@ export function ArenaMedia({ arena, sport, className = '', variant = 'card', pri
   const isLogo = media.source === 'arena-logo';
   const objectFit = isLogo ? 'contain' : 'cover';
   const usesLogoBackdrop = isLogo && variant === 'hero';
+  const optimizedLocal = media.src.startsWith('/img/');
+  const imageSizes = variant === 'thumbnail' ? '128px' : variant === 'ticket' || variant === 'identity' ? '160px' : '(max-width: 640px) 100vw, 640px';
   useEffect(() => {
     if (!critical) { setCriticalResolved(true); return; }
     setCriticalResolved(false);
@@ -54,7 +57,7 @@ export function ArenaMedia({ arena, sport, className = '', variant = 'card', pri
   }, [critical, media.src]);
   function settleImage() { void decodeImage(imageRef.current).finally(() => setCriticalResolved(true)); }
   function handleError() { setIndex((current) => { const next = Math.min(current + 1, sources.length - 1); if (next === current) setCriticalResolved(true); return next; }); }
-  return <><PageReadyGate enabled={critical} ready={criticalResolved} resourceId={`arena-media-${resourceId}-${media.src}`} /><div className={`arena-media arena-media-${variant} arena-media-fit-${objectFit} ${isLogo ? 'is-logo' : 'is-photo'} ${className}`}>{usesLogoBackdrop ? <img alt="" aria-hidden="true" className="arena-media-logo-backdrop" src={media.src}/> : null}<img alt={media.alt} className={`${objectFit === 'contain' ? 'object-contain' : 'object-cover'} ${usesLogoBackdrop ? 'arena-media-logo-foreground' : ''}`} fetchPriority={priority ? 'high' : 'auto'} loading={priority ? 'eager' : 'lazy'} onError={handleError} onLoad={settleImage} ref={imageRef} src={media.src} /></div></>;
+  return <><PageReadyGate enabled={critical} ready={criticalResolved} resourceId={`arena-media-${resourceId}-${media.src}`} /><div className={`arena-media arena-media-${variant} arena-media-fit-${objectFit} ${isLogo ? 'is-logo' : 'is-photo'} ${className}`}>{usesLogoBackdrop ? <img alt="" aria-hidden="true" className="arena-media-logo-backdrop" src={media.src}/> : null}{optimizedLocal ? <Image alt={media.alt} className={objectFit === 'contain' ? 'object-contain' : 'object-cover'} fetchPriority={priority ? 'high' : 'auto'} fill loading={priority ? 'eager' : 'lazy'} onError={handleError} onLoad={settleImage} ref={imageRef} sizes={imageSizes} src={media.src} /> : <img alt={media.alt} className={`${objectFit === 'contain' ? 'object-contain' : 'object-cover'} ${usesLogoBackdrop ? 'arena-media-logo-foreground' : ''}`} fetchPriority={priority ? 'high' : 'auto'} loading={priority ? 'eager' : 'lazy'} onError={handleError} onLoad={settleImage} ref={imageRef} src={media.src} />}</div></>;
 }
 
 function normalize(value: string) { return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, ''); }

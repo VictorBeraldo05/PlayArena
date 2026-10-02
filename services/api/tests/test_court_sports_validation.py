@@ -1,4 +1,5 @@
 import pytest
+from fastapi import Response
 from pydantic import ValidationError
 from pathlib import Path
 
@@ -19,8 +20,10 @@ def test_inactive_court_can_be_created_without_sport() -> None:
 
 def test_sports_endpoint_returns_society(monkeypatch) -> None:
     monkeypatch.setattr(owner.owner_repository, "list_sports", lambda: [{"id": 1, "name": "Society", "slug": "society"}])
-    result = owner.get_sports()
+    response = Response()
+    result = owner.get_sports(response)
     assert result == [{"id": 1, "name": "Society", "slug": "society"}]
+    assert response.headers["cache-control"] == "public, max-age=300"
 
 
 def test_sports_seed_contains_society() -> None:

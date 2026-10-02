@@ -46,7 +46,7 @@ function SearchContent() {
       setError('');
       try {
         const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
-        const response = await fetch(`${apiUrl}/sports`, { cache: 'no-store' });
+        const response = await fetch(`${apiUrl}/sports`);
         if (!response.ok) throw new Error('sports_fetch_failed');
         const data: Sport[] = await response.json();
         if (!active) return;

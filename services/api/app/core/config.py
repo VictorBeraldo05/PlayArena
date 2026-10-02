@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     web_origin: str | None = Field(default=None, alias="WEB_ORIGIN")
     web_origins: str | None = Field(default=None, alias="WEB_ORIGINS")
     api_docs_enabled: bool = Field(default=False, alias="API_DOCS_ENABLED")
+    performance_request_logging: bool = Field(default=False, alias="PERFORMANCE_REQUEST_LOGGING")
     trust_proxy_headers: bool = Field(default=False, alias="TRUST_PROXY_HEADERS")
     analytics_rate_limit_per_minute: PositiveInt = Field(default=120, alias="ANALYTICS_RATE_LIMIT_PER_MINUTE")
     availability_rate_limit_per_minute: PositiveInt = Field(default=60, alias="AVAILABILITY_RATE_LIMIT_PER_MINUTE")

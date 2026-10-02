@@ -727,7 +727,6 @@ function ArenaSummary({
         <ArenaMedia
           arena={{ name: arena, logo_path: quote?.logo_path ?? intent.logoPath }}
           className="min-h-[92px]"
-          critical
           prefer="logo"
           sport={sport}
           variant="ticket"

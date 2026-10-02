@@ -1,6 +1,6 @@
 'use client';
 
-/* The selected sport swaps the critical hero asset before its route reveal. */
+/* The sport hero can finish loading after the functional schedule controls appear. */
 /* eslint-disable react-hooks/set-state-in-effect */
 
 import Image from 'next/image';
@@ -29,13 +29,12 @@ type ArenaScheduleContext = {
   courts: { id: string; name: string }[];
 };
 
-// These public URLs intentionally work before the optional schedule assets are added.
 const scheduleSportVisuals: Record<string, ScheduleVisual> = {
   society: { label: 'Society', subtitle: 'Futebol society', image: '/img/sports/schedule/society.jpg', environment: 'field', ambient: 'rgba(70, 162, 61, .24)', secondary: 'rgba(143,255,60,.16)', objectPosition: 'center 60%' },
-  beachtennis: { label: 'Beach Tennis', subtitle: 'Raquete e areia', image: '/img/sports/schedule/beach-tennis.jpg', environment: 'sand', ambient: 'rgba(224, 166, 80, .22)', secondary: 'rgba(143,255,60,.13)' },
-  futevolei: { label: 'Futevôlei', subtitle: 'Areia e rede', image: '/img/sports/schedule/futevolei.jpg', environment: 'sand', ambient: 'rgba(219, 132, 71, .22)', secondary: 'rgba(143,255,60,.13)' },
-  tenis: { label: 'Tênis', subtitle: 'Jogo de precisão', image: '/img/sports/schedule/tenis.jpg', environment: 'court', ambient: 'rgba(65, 146, 111, .22)', secondary: 'rgba(119,229,255,.12)' },
-  volei: { label: 'Vôlei', subtitle: 'Quadra e rede', image: '/img/sports/schedule/volei.jpg', environment: 'court', ambient: 'rgba(81, 125, 198, .2)', secondary: 'rgba(143,255,60,.12)' },
+  beachtennis: { label: 'Beach Tennis', subtitle: 'Raquete e areia', environment: 'sand', ambient: 'rgba(224, 166, 80, .22)', secondary: 'rgba(143,255,60,.13)' },
+  futevolei: { label: 'Futevôlei', subtitle: 'Areia e rede', environment: 'sand', ambient: 'rgba(219, 132, 71, .22)', secondary: 'rgba(143,255,60,.13)' },
+  tenis: { label: 'Tênis', subtitle: 'Jogo de precisão', environment: 'court', ambient: 'rgba(65, 146, 111, .22)', secondary: 'rgba(119,229,255,.12)' },
+  volei: { label: 'Vôlei', subtitle: 'Quadra e rede', environment: 'court', ambient: 'rgba(81, 125, 198, .2)', secondary: 'rgba(143,255,60,.12)' },
 };
 
 const defaultVisual: ScheduleVisual = { label: 'Modalidade', subtitle: 'Seu jogo, sua arena', environment: 'default', ambient: 'rgba(70, 162, 61, .2)', secondary: 'rgba(143,255,60,.13)' };
@@ -56,10 +55,9 @@ export function AvailabilitySearchClient() {
   const [arenaContext, setArenaContext] = useState<ArenaScheduleContext | null>(null);
   const [arenaContextError, setArenaContextError] = useState(false);
   const [heroImageFailed, setHeroImageFailed] = useState(false);
-  const [heroImageReady, setHeroImageReady] = useState(!visual.image);
   const times = visual.quickTimes ?? DEFAULT_TIMES;
   const period = periodForTime(time);
-  useEffect(() => { setHeroImageReady(!visual.image); setHeroImageFailed(false); }, [visual.image]);
+  useEffect(() => { setHeroImageFailed(false); }, [visual.image]);
   useEffect(() => {
     if (!arenaId) {
       setArenaContext(null);
@@ -74,7 +72,6 @@ export function AvailabilitySearchClient() {
       .catch(() => { if (active) setArenaContextError(true); });
     return () => { active = false; };
   }, [arenaId]);
-  usePageReadyResource('schedule-hero', heroImageReady || heroImageFailed);
   usePageReadyResource('arena-schedule-context', !isArenaScoped || Boolean(arenaContext || arenaContextError));
 
   const selectedCourt = arenaContext?.courts.find((court) => court.id === courtId) ?? null;
@@ -109,7 +106,7 @@ export function AvailabilitySearchClient() {
         <form className="schedule-reveal schedule-reveal-two mt-5" onSubmit={search}>
           <DateNavigator minDate={today} onSelect={setDay} selectedDate={day}/>
 
-          <SportHero imageFailed={heroImageFailed} key={sport} onImageError={() => setHeroImageFailed(true)} onImageLoad={() => setHeroImageReady(true)} visual={visual} />
+          <SportHero imageFailed={heroImageFailed} key={sport} onImageError={() => setHeroImageFailed(true)} visual={visual} />
 
           <section className="mt-4" aria-label="Escolha o horário">
             <div className="flex items-center justify-between"><p className="text-[10px] font-black uppercase tracking-[.2em] text-[#AAB7C5]">Horário do jogo</p><div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[.14em] text-[#D4DCE5]"><PeriodIcon /><span>{period}</span></div></div>
@@ -131,9 +128,9 @@ export function AvailabilitySearchClient() {
   );
 }
 
-function SportHero({ visual, imageFailed, onImageError, onImageLoad }: { visual: ScheduleVisual; imageFailed: boolean; onImageError: () => void; onImageLoad: () => void }) {
+function SportHero({ visual, imageFailed, onImageError }: { visual: ScheduleVisual; imageFailed: boolean; onImageError: () => void }) {
   return <section className={`schedule-sport-hero schedule-environment-${visual.environment} relative mt-4 h-40 overflow-hidden rounded-[20px] border border-white/10`}>
-    {visual.image && !imageFailed ? <Image alt={`${visual.label} em arena esportiva`} className="schedule-hero-image absolute inset-0 h-full w-full object-cover" fill onError={onImageError} onLoad={onImageLoad} priority sizes="(max-width: 520px) 100vw, 520px" src={visual.image} style={{ objectPosition: visual.objectPosition ?? 'center' }} /> : null}
+    {visual.image && !imageFailed ? <Image alt={`${visual.label} em arena esportiva`} className="schedule-hero-image absolute inset-0 h-full w-full object-cover" fill onError={onImageError} priority sizes="(max-width: 520px) 100vw, 520px" src={visual.image} style={{ objectPosition: visual.objectPosition ?? 'center' }} /> : null}
     <div aria-hidden="true" className="schedule-hero-fallback absolute inset-0" />
     <div aria-hidden="true" className="schedule-hero-overlay absolute inset-0" />
     <div className="absolute inset-x-0 bottom-0 z-[3] p-4"><p className="text-[13px] font-black uppercase tracking-[.13em] text-white">{visual.label}</p><p className="mt-0.5 text-[11px] text-[#D1DCE7]">{visual.subtitle}</p></div>

@@ -8,11 +8,11 @@ import { ArenaMedia } from '../../../../components/arena-media';
 import { PlayerBottomNav, usePlayerBottomNavigation } from '../../../../components/player-bottom-nav';
 import { trackEvent } from '../../../../lib/analytics';
 import { formatCurrencyBRL } from '../../../../lib/format';
+import { fetchPublicArena, type PublicArena } from '../../../../lib/public-arena-cache';
 import { usePageReadyResource } from '../../../../providers/page-ready-provider';
 
-type Court = { id: string; name: string; default_duration_minutes: number; sports: string[]; price_from: string | null };
-type OpeningHour = { weekday: number; open_time: string; close_time: string };
-type Arena = { name: string; description: string | null; logo_path?: string | null; address: string; city: string; state: string; phone: string | null; whatsapp: string | null; courts: Court[]; opening_hours: OpeningHour[] };
+type Court = PublicArena['courts'][number];
+type OpeningHour = PublicArena['opening_hours'][number];
 
 const week = ['DOM', 'SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB'];
 
@@ -20,7 +20,7 @@ export default function ArenaDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const showPlayerNavigation = usePlayerBottomNavigation();
-  const [arena, setArena] = useState<Arena | null>(null);
+  const [arena, setArena] = useState<PublicArena | null>(null);
   const [error, setError] = useState('');
   const [showWeek, setShowWeek] = useState(false);
   usePageReadyResource('arena-detail', Boolean(arena || error));
@@ -28,8 +28,11 @@ export default function ArenaDetailPage() {
   const loadArena = useCallback(() => {
     setError('');
     const base = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
-    void fetch(`${base}/arenas/${id}`)
-      .then((response) => response.ok ? response.json() as Promise<Arena> : Promise.reject())
+    void fetchPublicArena(id, async () => {
+      const response = await fetch(`${base}/arenas/${id}`, { cache: 'no-store' });
+      if (!response.ok) throw new Error('arena_fetch_failed');
+      return response.json() as Promise<PublicArena>;
+    })
       .then((result) => {
         setArena(result);
         trackEvent('arena_viewed', { arenaId: id, properties: { city: result.city }, dedupeKey: `arena-viewed:${id}` });
@@ -58,7 +61,7 @@ export default function ArenaDetailPage() {
         </button>
 
         <section className="arena-detail-hero relative mt-4 overflow-hidden rounded-[22px] bg-[#111923]">
-          <ArenaMedia arena={arena} className="absolute inset-0" critical priority sport={primarySport} variant="hero" />
+          <ArenaMedia arena={arena} className="absolute inset-0" priority sport={primarySport} variant="hero" />
           <div aria-hidden="true" className="absolute inset-0 bg-gradient-to-t from-[#080D14]/35 via-transparent to-white/[.03]" />
         </section>
 

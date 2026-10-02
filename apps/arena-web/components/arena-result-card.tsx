@@ -23,7 +23,7 @@ function formatDistance(distance: number): string {
   return `${new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(distance)} km`;
 }
 
-export function ArenaResultCard({ group, onReserve, sportName, searchedTime, criticalMedia = false }: { group: ArenaAvailabilityGroup; onReserve: (option: AvailabilityOption) => void; sportName: string; searchedTime: string; criticalMedia?: boolean }) {
+export function ArenaResultCard({ group, onReserve, sportName, searchedTime, priorityMedia = false }: { group: ArenaAvailabilityGroup; onReserve: (option: AvailabilityOption) => void; sportName: string; searchedTime: string; priorityMedia?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const options = [...group.options].sort((a, b) => optionPrice(a) - optionPrice(b));
   const visibleOptions = expanded ? options : options.slice(0, 2);
@@ -32,7 +32,7 @@ export function ArenaResultCard({ group, onReserve, sportName, searchedTime, cri
 
   return <article className="overflow-hidden rounded-[19px] border border-white/[0.09] bg-[#111923] shadow-[0_10px_28px_rgba(0,0,0,0.16)]">
     <div className="flex min-w-0 items-center gap-3 p-3.5 pb-3">
-      <ArenaMedia arena={{ name: group.name, logo_path: group.logo_path, photo_url: group.imageUrl }} className="h-[76px] w-[76px] shrink-0 rounded-[13px] border border-white/[0.08]" critical={criticalMedia} priority={criticalMedia} sport={sportName} variant="thumbnail" />
+      <ArenaMedia arena={{ name: group.name, logo_path: group.logo_path, photo_url: group.imageUrl }} className="h-[76px] w-[76px] shrink-0 rounded-[13px] border border-white/[0.08]" priority={priorityMedia} sport={sportName} variant="thumbnail" />
       <div className="min-w-0 flex-1">
         <h2 className="break-words text-[17px] font-extrabold leading-[1.2] tracking-[-0.025em] text-white">{group.name}</h2>
         <p className="mt-1.5 text-[12px] font-medium text-[#B3BFCA]">{availableCourtsLabel}</p>

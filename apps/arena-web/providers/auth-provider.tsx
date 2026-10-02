@@ -122,13 +122,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let active = true;
 
-    supabase.auth.getSession().then(({ data }) => {
-      if (active) {
-        void hydrateAuth(data.session);
-      }
-    });
-
+    // The SDK emits INITIAL_SESSION for this listener, so a parallel getSession would hydrate twice.
     const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (!active) return;
       if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && nextSession?.user.id === readyUserId.current) {
         setSession(nextSession);
         return;
