@@ -113,6 +113,8 @@ def _payment_pix_expires_at(payment: dict) -> datetime:
 
 
 def create_checkout(user_id: str, data: dict, payer_email: str | None = None) -> dict:
+    if not settings.booking_payment_enabled:
+        raise PaymentConfigurationError("Booking payment is disabled.", "booking_payment_disabled")
     payment_method = data["payment_method"]
     provider_name = settings.payment_provider if settings.payment_provider_available_for_user(user_id) else None
 

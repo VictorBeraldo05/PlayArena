@@ -23,6 +23,7 @@ from app.repositories.booking_repository import (
     public_arenas,
     public_arena_schedule,
 )
+from app.repositories.payment_repository import CheckoutConfigurationError, CheckoutNotFoundError, CheckoutSlotUnavailableError
 from app.schemas.auth import AuthenticatedUser
 from app.schemas.booking import (
     SAO_PAULO_TIME_ZONE,
@@ -138,11 +139,20 @@ def post_player_reservation(
         principal=f"user:{current_user.id}",
         limit=settings.reservation_rate_limit_per_minute,
     )
-    del input_data
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail={"code": "payment_required", "message": "Use o checkout para solicitar esta reserva."},
-    )
+    if settings.booking_payment_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "payment_required", "message": "Use o checkout para solicitar esta reserva."},
+        )
+    try:
+        created = create_player_reservation(current_user.id, input_data.model_dump())
+    except CheckoutNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Campo ou modalidade nao encontrados.") from exc
+    except (CheckoutSlotUnavailableError, BookingConflictError) as exc:
+        raise HTTPException(status_code=409, detail={"code": "slot_unavailable", "message": "Esse horario nao esta mais disponivel."}) from exc
+    except CheckoutConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return created
 
 
 @router.get("/player/reservations")

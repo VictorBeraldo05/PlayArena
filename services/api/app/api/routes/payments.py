@@ -98,7 +98,16 @@ def checkout_quote(
             sport,
             settings.booking_advance_amount,
             use_wallet_balance=use_wallet_balance,
+            **({"payment_required": False} if not settings.booking_payment_enabled else {}),
         )
+        if not settings.booking_payment_enabled:
+            return {
+                **quote,
+                "provider_available": False,
+                "checkout_available": True,
+                "payment_provider": None,
+                "hold_minutes": 0,
+            }
         provider_available = settings.payment_provider_available_for_user(current_user.id)
         return {
             **quote,
@@ -117,6 +126,8 @@ def post_checkout(
     input_data: CheckoutCreate,
     current_user: AuthenticatedUser = Depends(require_player),
 ) -> dict:
+    if not settings.booking_payment_enabled:
+        raise HTTPException(status_code=409, detail={"code": "booking_payment_disabled", "message": "Solicite a pre-reserva sem pagamento."})
     enforce_rate_limit(request, scope="checkout", principal=f"user:{current_user.id}", limit=settings.checkout_rate_limit_per_minute)
     try:
         return create_checkout(current_user.id, input_data.model_dump(), payer_email=current_user.email)

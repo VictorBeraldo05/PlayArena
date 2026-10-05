@@ -7,6 +7,7 @@ import Image from 'next/image';
 import { ArenaMedia } from '../../components/arena-media';
 import { useAuth } from '../../components/use-auth';
 import { ApiRequestError, apiRequest } from '../../lib/api';
+import { bookingPaymentMode } from '../../lib/booking-payment-mode';
 import { trackEvent } from '../../lib/analytics';
 import { pixExpiryState } from '../../lib/pix-expiration.mjs';
 import {
@@ -48,6 +49,7 @@ type ReservationIntent = {
   duration: string;
 };
 type CheckoutQuote = {
+  payment_required: boolean;
   arena_id: string;
   arena_name: string;
   logo_path?: string;
@@ -72,7 +74,8 @@ type CheckoutQuote = {
   payment_provider?: 'sandbox' | 'mercado_pago' | null;
   hold_minutes: number;
 };
-type CheckoutPayment = CheckoutQuote & {
+type CheckoutPayment = Omit<CheckoutQuote, 'payment_required'> & {
+  payment_required?: boolean;
   payment_id: string;
   provider: 'wallet' | 'sandbox' | string;
   provider_payment_id?: string;
@@ -89,6 +92,9 @@ type CheckoutPayment = CheckoutQuote & {
     copy_paste: string;
     expires_at: string | null;
   } | null;
+};
+type ReservationReceipt = Pick<CheckoutQuote, 'arena_name' | 'logo_path' | 'court_name' | 'sport_name' | 'start_at' | 'court_price_total' | 'booking_amount' | 'amount_due_at_venue'> & {
+  payment_required?: boolean;
 };
 type CheckoutStage = 'review' | 'processing' | 'pix' | 'failed' | 'success' | 'protected';
 type StoredCheckoutAttempt = {
@@ -184,6 +190,7 @@ function ReservationPage() {
   );
   const [quote, setQuote] = useState<CheckoutQuote | null>(null);
   const [payment, setPayment] = useState<CheckoutPayment | null>(null);
+  const [freeReservation, setFreeReservation] = useState<ReservationReceipt | null>(null);
   const [useWalletBalance, setUseWalletBalance] = useState(
     storedAttempt?.useWalletBalance ?? false,
   );
@@ -211,6 +218,7 @@ function ReservationPage() {
   const quoteLoading = Boolean(session && profileComplete && !quote && !error && !resumePaymentId);
   const paymentId = payment?.payment_id;
   const paymentStatus = payment?.status;
+  const freeBooking = bookingPaymentMode(quote) === 'free';
   usePageReadyResource(
     'checkout-intent',
     validIntent && !isLoading && (!session || Boolean(quote || error || payment || resumePaymentId)),
@@ -463,6 +471,34 @@ function ReservationPage() {
       return;
     }
     if (!quote && !idempotencyKey.current) return;
+    if (freeBooking) {
+      submissionLock.current = true;
+      setStage('processing');
+      setError('');
+      try {
+        const created = await apiRequest<ReservationReceipt>('/player/reservations', session.access_token, {
+          method: 'POST',
+          body: JSON.stringify({ court_id: intent.courtId, start_at: intent.startAt, sport: intent.sport }),
+        });
+        setFreeReservation(created);
+        window.sessionStorage.removeItem(PENDING_RESERVATION_KEY);
+        clearCheckoutKey();
+        setStage('success');
+      } catch (requestError) {
+        const apiError = requestError instanceof ApiRequestError ? requestError : null;
+        if (apiError?.code === 'payment_required') {
+          setQuote(null);
+          setQuoteReloadVersion((version) => version + 1);
+        }
+        setError(apiError?.code === 'slot_unavailable'
+          ? 'Esse horario nao esta mais disponivel.'
+          : apiError?.message || 'Nao foi possivel enviar a pre-reserva.');
+        setStage('failed');
+      } finally {
+        submissionLock.current = false;
+      }
+      return;
+    }
     if (quote && !quote.checkout_available) {
       setError('O pagamento via PIX ainda não está disponível.');
       return;
@@ -539,7 +575,7 @@ function ReservationPage() {
         clearCheckoutKey();
         setCheckoutAttemptLocked(false);
       }
-      if (apiError?.code === 'payment_plan_changed') {
+      if (apiError?.code === 'payment_plan_changed' || apiError?.code === 'booking_payment_disabled') {
         setQuote(null);
         setQuoteReloadVersion((version) => version + 1);
       }
@@ -555,7 +591,8 @@ function ReservationPage() {
   }
 
   if (!validIntent) return <Unavailable onBack={() => router.push('/buscar')} />;
-  if (stage === 'processing') return <Processing />;
+  if (stage === 'processing' && !freeBooking) return <Processing />;
+  if (stage === 'success' && freeReservation) return <Success intent={intent} payment={freeReservation} />;
   if (stage === 'success' && payment) return <Success intent={intent} payment={payment} />;
   if (stage === 'protected' && payment) return <ProtectedPayment onReservations={() => router.push('/player/reservas')} />;
   if (stage === 'pix' && payment) return (
@@ -585,7 +622,7 @@ function ReservationPage() {
             ‹
           </button>
           <h1 className="min-w-0 whitespace-nowrap text-[17px] font-black tracking-[-.04em] sm:text-lg">Finalizar reserva</h1>
-          <WalletBalance balance={quote?.wallet_balance} />
+          {quote?.payment_required ? <WalletBalance balance={quote.wallet_balance} /> : <span />}
         </header>
         <ArenaSummary intent={intent} quote={quote} />
         <form className="mt-3 space-y-3 sm:space-y-4" onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void submit(); }}>
@@ -599,14 +636,16 @@ function ReservationPage() {
             <ProfileNotice onComplete={completeProfile} />
           ) : quote ? (
             <>
-              <FeeExplanation amount={quote.booking_amount} />
-              <Values quote={quote} />
-              <PaymentChoice
-                disabled={quoteRefreshing || checkoutAttemptLocked}
-                onChange={changeWalletUsage}
-                quote={quote}
-              />
-              {!quote.checkout_available ? (
+              {freeBooking ? <FreeValues quote={quote} /> : <>
+                <FeeExplanation amount={quote.booking_amount} />
+                <Values quote={quote} />
+                <PaymentChoice
+                  disabled={quoteRefreshing || checkoutAttemptLocked}
+                  onChange={changeWalletUsage}
+                  quote={quote}
+                />
+              </>}
+              {!freeBooking && !quote.checkout_available ? (
                 <p aria-live="polite" className="rounded-xl border border-white/[.08] bg-[#18212D]/70 px-3 py-2 text-xs leading-5 text-[#C3CDD7]">
                   O pagamento via PIX não está disponível para esta conta no momento. Nenhuma cobrança foi iniciada.
                 </p>
@@ -630,7 +669,9 @@ function ReservationPage() {
                 <button
                   className="min-h-12 w-full rounded-2xl bg-[#8FFF3C] px-5 font-black text-[#080D14] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
                   onClick={() => {
-                    if (resumePaymentId) {
+                    if (freeBooking && quote) {
+                      void submit();
+                    } else if (resumePaymentId) {
                       setStage('processing');
                       setResumeVersion((version) => version + 1);
                     } else if (idempotencyKey.current) {
@@ -667,16 +708,19 @@ function ReservationPage() {
                     quoteLoading ||
                     quoteRefreshing ||
                     Boolean(error) ||
+                    stage === 'processing' ||
                     !quote.checkout_available
                   }
                   type="submit"
                 >
-                  {checkoutCtaLabel(quote, quoteRefreshing)}
+                  {freeBooking ? stage === 'processing' ? 'Enviando pré-reserva...' : 'Solicitar pré-reserva' : checkoutCtaLabel(quote, quoteRefreshing)}
                 </button>
               )}
-              <p className="mt-1 text-center text-[10px] font-semibold text-[#9DA7B3]">
-                Pagamento protegido pela PlayArena
-              </p>
+              {freeBooking ? (
+                <p className="mt-1 text-center text-[10px] font-semibold text-[#9DA7B3]">A arena confirmará sua solicitação por e-mail.</p>
+              ) : session && quote ? (
+                <p className="mt-1 text-center text-[10px] font-semibold text-[#9DA7B3]">Pagamento protegido pela PlayArena</p>
+              ) : null}
             </div>
           </div>
         </form>
@@ -755,6 +799,18 @@ function FeeExplanation({ amount }: { amount: string | number }) {
       <p className="mt-1 text-[11px] leading-[1.45] text-[#9DA7B3]">
         Descontamos esse valor na arena. Se não confirmarem sua reserva, ele volta para seu saldo.
       </p>
+    </section>
+  );
+}
+
+function FreeValues({ quote }: { quote: CheckoutQuote }) {
+  return (
+    <section className="border-y border-white/[.08] px-1 py-3">
+      <p className="text-[10px] font-extrabold uppercase tracking-[.16em] text-[#9DA7B3]">Valores</p>
+      <div className="mt-3 space-y-2 text-xs">
+        <ValueRow label="Valor do campo" value={formatCurrencyBRL(quote.court_price_total)} />
+        <ValueRow strong label="Pagamento na arena" value={formatCurrencyBRL(quote.amount_due_at_venue)} />
+      </div>
     </section>
   );
 }
@@ -1058,7 +1114,7 @@ function CheckoutSkeleton() {
   );
 }
 
-function Success({ intent, payment }: { intent: ReservationIntent; payment: CheckoutPayment }) {
+function Success({ intent, payment }: { intent: ReservationIntent; payment: ReservationReceipt }) {
   const router = useRouter();
   const date = ticketDate(payment.start_at);
   return (
@@ -1075,7 +1131,7 @@ function Success({ intent, payment }: { intent: ReservationIntent; payment: Chec
       <div className="relative z-10 mx-auto flex min-h-[100dvh] w-full max-w-[440px] flex-col items-center px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1.5rem,env(safe-area-inset-top))] text-center">
         <SuccessOrb />
         <p className="mt-5 text-xs font-extrabold uppercase tracking-[.16em] text-[#8FFF3C]">
-          Pagamento realizado
+          {payment.payment_required === false ? 'Solicitação registrada' : 'Pagamento realizado'}
         </p>
         <h1 className="mt-2 text-[28px] font-extrabold leading-none tracking-[-.06em]">
           Pré-reserva enviada
@@ -1139,7 +1195,7 @@ function ReservationTicket({
   date,
 }: {
   intent: ReservationIntent;
-  payment: CheckoutPayment;
+  payment: ReservationReceipt;
   date: { main: string; sub: string };
 }) {
   return (
@@ -1166,7 +1222,7 @@ function ReservationTicket({
           </p>
           <div className="mt-4 space-y-1.5 border-t border-white/[.08] pt-3 text-xs">
             <ValueRow label="Total" value={formatCurrencyBRL(payment.court_price_total)} />
-            <ValueRow accent label="Pago" value={formatCurrencyBRL(payment.booking_amount)} />
+            {payment.payment_required !== false ? <ValueRow accent label="Pago" value={formatCurrencyBRL(payment.booking_amount)} /> : null}
             <ValueRow
               strong
               label="Na arena"

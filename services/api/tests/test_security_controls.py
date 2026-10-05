@@ -140,6 +140,5 @@ def test_player_reservation_rejects_past_start_time() -> None:
         PlayerReservationCreate(
             court_id="20000000-0000-0000-0000-000000000001",
             start_at=datetime.now() - timedelta(minutes=1),
-            customer_name="Jose",
-            customer_phone="11999999999",
+            sport="Society",
         )

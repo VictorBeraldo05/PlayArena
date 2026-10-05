@@ -17,6 +17,8 @@ type Analytics = {
     users: number;
     searches: number;
     reservations: number;
+    free_bookings: number;
+    paid_bookings: number;
     gmv: string | number;
     average_ticket: string | number;
     confirmation_minutes: number;
@@ -122,7 +124,7 @@ export default function AdminAnalyticsPage() {
             <section className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
               <Metric label="Usuários novos" value={data.overview.users} />
               <Metric label="Buscas" value={data.overview.searches} />
-              <Metric label="Reservas" value={data.overview.reservations} />
+              <Metric label="Reservas" value={data.overview.reservations} description={`${data.overview.free_bookings} sem antecipação · ${data.overview.paid_bookings} pagas pelo app`} />
               <Metric label="Valor movimentado" value={formatCurrencyBRL(data.overview.gmv)} />
               <Metric
                 label="Ticket médio"
@@ -207,11 +209,12 @@ export default function AdminAnalyticsPage() {
     </main>
   );
 }
-function Metric({ label, value }: { label: string; value: string | number }) {
+function Metric({ label, value, description }: { label: string; value: string | number; description?: string }) {
   return (
     <section className="rounded-[20px] border border-white/10 bg-[#111923] p-5">
       <p className="text-xs font-bold uppercase tracking-[.12em] text-[#9DA7B3]">{label}</p>
       <strong className="mt-3 block text-2xl font-extrabold tracking-[-.05em]">{value}</strong>
+      {description ? <p className="mt-2 text-xs leading-relaxed text-[#9DA7B3]">{description}</p> : null}
     </section>
   );
 }

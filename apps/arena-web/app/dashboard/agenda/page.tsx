@@ -434,15 +434,17 @@ function SlotState({
         {slot.source === 'arena_manual' ? <span className="agenda-source">Manual</span> : null}
       </div>
       {slot.price ? (
-        <div className="mt-3 grid grid-cols-2 gap-3 border-t border-white/[.07] pt-3 text-[11px]">
+        <div className={`mt-3 grid gap-3 border-t border-white/[.07] pt-3 text-[11px] ${Number(slot.booking_amount_paid) > 0 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+          {Number(slot.booking_amount_paid) > 0 ? (
           <p>
             <span className="block text-[#9DA7B3]">Pago no PlayArena</span>
             <b className="mt-1 block text-[#8FFF3C]">
               {formatCurrencyBRL(slot.booking_amount_paid ?? 0)}
             </b>
           </p>
+          ) : null}
           <p>
-            <span className="block text-[#9DA7B3]">Receber na arena</span>
+            <span className="block text-[#9DA7B3]">{Number(slot.booking_amount_paid) > 0 ? 'Receber na arena' : 'Valor a receber na arena'}</span>
             <b className="mt-1 block">
               {formatCurrencyBRL(slot.amount_due_at_venue ?? slot.price)}
             </b>

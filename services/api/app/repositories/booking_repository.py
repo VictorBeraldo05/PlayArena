@@ -5,8 +5,17 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
+from app.core.config import settings
 from app.db.session import get_session_factory
-from app.repositories.payment_repository import credit_reservation_payment
+from app.repositories.payment_repository import (
+    CheckoutConfigurationError,
+    CheckoutNotFoundError,
+    CheckoutSlotUnavailableError,
+    credit_reservation_payment,
+    insert_reservation,
+    lock_booking_slot,
+    resolve_booking,
+)
 from app.schemas.booking import SAO_PAULO_TIME_ZONE
 from app.services.arena_distance import distance_km
 
@@ -264,9 +273,56 @@ def public_arena_schedule(arena_id: UUID, day: date, court_id: UUID | None = Non
 
 
 def create_player_reservation(user_id: str, data: dict[str, Any]) -> dict[str, Any]:
-    """Reject the legacy path; paid app reservations are created by checkout only."""
-    del user_id, data
-    raise ValueError("Payment checkout is required before creating a reservation.")
+    """Create an unpaid request using the same slot resolver and lock as checkout."""
+    if settings.booking_payment_enabled:
+        raise ValueError("Payment checkout is required before creating a reservation.")
+    court_id, start_at, sport = data["court_id"], data["start_at"], data["sport"]
+    factory = get_session_factory()
+    try:
+        with factory.begin() as session:
+            duration = session.execute(text("""
+                select default_duration_minutes from public.courts where id = :court_id
+            """), {"court_id": court_id}).scalar_one_or_none()
+            if duration is None:
+                raise CheckoutNotFoundError
+            lock_booking_slot(session, court_id, start_at, start_at + timedelta(minutes=int(duration)))
+            existing = session.execute(text("""
+                select r.id, r.start_at, r.end_at, r.court_price_total,
+                       r.booking_amount_paid, r.booking_amount_paid as booking_amount,
+                       r.amount_due_at_venue, r.currency, r.source,
+                       r.status, a.id as arena_id, a.name as arena_name, a.logo_path,
+                       c.id as court_id, c.name as court_name, s.name as sport_name
+                from public.reservations r
+                join public.arenas a on a.id = r.arena_id
+                join public.courts c on c.id = r.court_id
+                join public.sports s on s.id = r.sport_id
+                where r.user_id = :user_id and r.court_id = :court_id
+                  and r.start_at = :start_at and r.status in ('pending', 'confirmed')
+                  and r.source = 'app' and r.payment_id is null
+                  and (lower(s.name) = lower(:sport) or lower(s.slug) = lower(:sport))
+            """), {"user_id": user_id, "court_id": court_id, "start_at": start_at, "sport": sport}).mappings().one_or_none()
+            if existing:
+                return {**dict(existing), "reservation_id": existing["id"], "payment_required": False}
+            booking = resolve_booking(session, user_id=user_id, court_id=court_id, start_at=start_at, sport=sport)
+            total = booking["court_price_total"]
+            reservation = insert_reservation(session, hold={
+                **booking,
+                "user_id": user_id,
+                "start_at": start_at,
+                "booking_amount": 0,
+                "amount_due_at_venue": total,
+                "currency": "BRL",
+            }, payment_id=None)
+            return {
+                **reservation, **{key: booking[key] for key in (
+                    "arena_id", "arena_name", "logo_path", "court_id", "court_name", "sport_name",
+                )},
+                "reservation_id": reservation["id"],
+                "booking_amount": reservation["booking_amount_paid"],
+                "payment_required": False,
+            }
+    except IntegrityError as exc:
+        raise BookingConflictError from exc
 
 
 def cancel_player_reservation(

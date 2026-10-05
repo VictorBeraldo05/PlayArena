@@ -119,7 +119,7 @@ def _available_wallet_balance(
     return max(Decimal("0.00"), _wallet_balance(session, user_id) - _decimal(reserved))
 
 
-def _resolve_booking(
+def resolve_booking(
     session: Any,
     *,
     user_id: str,
@@ -195,10 +195,27 @@ def get_checkout_quote(
     advance_amount: Decimal,
     *,
     use_wallet_balance: bool = False,
+    payment_required: bool = True,
 ) -> dict[str, Any]:
     factory = get_session_factory()
     with factory() as session:
-        booking = _resolve_booking(session, user_id=user_id, court_id=court_id, start_at=start_at, sport=sport)
+        booking = resolve_booking(session, user_id=user_id, court_id=court_id, start_at=start_at, sport=sport)
+        if not payment_required:
+            return {
+                **booking,
+                "start_at": start_at,
+                "booking_amount": Decimal("0.00"),
+                "amount_due_at_venue": booking["court_price_total"],
+                "currency": "BRL",
+                "payment_required": False,
+                "wallet_balance": Decimal("0.00"),
+                "wallet_available": False,
+                "wallet_has_balance": False,
+                "use_wallet_balance": False,
+                "wallet_amount": Decimal("0.00"),
+                "provider_amount": Decimal("0.00"),
+                "requires_provider": False,
+            }
         advance = _decimal(advance_amount)
         if booking["court_price_total"] < advance:
             raise CheckoutConfigurationError("O valor do campo e menor que a antecipacao configurada.")
@@ -214,6 +231,7 @@ def get_checkout_quote(
             "booking_amount": advance,
             "amount_due_at_venue": booking["court_price_total"] - advance,
             "currency": "BRL",
+            "payment_required": True,
             "wallet_balance": balance,
             "wallet_available": balance >= advance,
             "wallet_has_balance": balance > 0,
@@ -259,7 +277,7 @@ def _existing_checkout(session: Any, user_id: str, idempotency_key: str) -> dict
     return dict(row) if row else None
 
 
-def _insert_reservation(session: Any, *, hold: dict[str, Any], payment_id: UUID | str) -> dict[str, Any]:
+def insert_reservation(session: Any, *, hold: dict[str, Any], payment_id: UUID | str | None) -> dict[str, Any]:
     return dict(session.execute(text("""
         insert into public.reservations (
           arena_id, court_id, user_id, customer_name, customer_phone, start_at, end_at,
@@ -306,10 +324,10 @@ def create_checkout_record(
                     raise CheckoutIdempotencyConflictError
                 return existing, False
 
-            base = _resolve_booking(session, user_id=user_id, court_id=court_id, start_at=start_at, sport=sport)
+            base = resolve_booking(session, user_id=user_id, court_id=court_id, start_at=start_at, sport=sport)
             _lock_slot(session, court_id, start_at, base["end_at"])
             # Re-read after acquiring the shared slot lock to close checkout races.
-            base = _resolve_booking(session, user_id=user_id, court_id=court_id, start_at=start_at, sport=sport)
+            base = resolve_booking(session, user_id=user_id, court_id=court_id, start_at=start_at, sport=sport)
             advance = _decimal(advance_amount)
             total = base["court_price_total"]
             if total < advance:
@@ -408,7 +426,7 @@ def create_checkout_record(
                 })
 
             if provider_amount == 0:
-                reservation = _insert_reservation(session, hold=hold_values, payment_id=payment["payment_id"])
+                reservation = insert_reservation(session, hold=hold_values, payment_id=payment["payment_id"])
                 session.execute(text("""
                     update public.payments set reservation_id = :reservation_id where id = :payment_id
                 """), {"reservation_id": reservation["id"], "payment_id": payment["payment_id"]})
@@ -665,7 +683,7 @@ def process_provider_event(provider: str, event: ProviderWebhookEvent, raw_paylo
                     "ledger_key": f"booking-debit:{payment['payment_id']}",
                 })
                 session.execute(text("update public.payments set wallet_debited=true where id=:payment_id"), {"payment_id": payment["payment_id"]})
-            reservation = _insert_reservation(session, hold=payment, payment_id=payment["payment_id"])
+            reservation = insert_reservation(session, hold=payment, payment_id=payment["payment_id"])
             reservation_id = reservation["id"]
             session.execute(text("update public.payments set reservation_id=:reservation_id where id=:payment_id"), {"reservation_id": reservation_id, "payment_id": payment["payment_id"]})
             session.execute(text("update public.booking_holds set status='converted', reservation_id=:reservation_id where id=:hold_id"), {"reservation_id": reservation_id, "hold_id": payment["hold_id"]})

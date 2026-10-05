@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     arena_geocoding_user_agent: str = Field(default="PlayArena/1.0 (+https://useplayarena.com.br)", alias="ARENA_GEOCODING_USER_AGENT")
     email_request_timeout_seconds: PositiveInt = Field(default=5, alias="EMAIL_REQUEST_TIMEOUT_SECONDS")
     booking_advance_amount: Decimal = Field(default=Decimal("5.00"), alias="BOOKING_ADVANCE_AMOUNT", gt=0)
+    booking_payment_enabled: bool = Field(default=True, alias="BOOKING_PAYMENT_ENABLED")
     payment_hold_minutes: PositiveInt = Field(default=10, alias="PAYMENT_HOLD_MINUTES")
     payment_provider: Literal["disabled", "sandbox", "mercado_pago"] = Field(default="disabled", alias="PAYMENT_PROVIDER")
     payment_environment: Literal["test", "production"] = Field(default="test", alias="PAYMENT_ENV")

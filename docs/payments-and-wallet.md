@@ -17,7 +17,16 @@
 - `reservations`: snapshots `court_price_total`, `booking_amount_paid`, `amount_due_at_venue`, `currency` e `payment_id`.
 - Advisory lock por quadra/janela serializa checkout, bloqueio e reserva manual; constraints GiST continuam como ultima protecao.
 
-O endpoint legado `POST /player/reservations` retorna `payment_required`. Reservas de app sao criadas somente pela conversao de um pagamento confirmado ou por debito atomico do Saldo PlayArena.
+Com `BOOKING_PAYMENT_ENABLED=true`, `POST /player/reservations` retorna `payment_required`. Reservas pagas de app continuam sendo criadas somente pela conversao de um pagamento confirmado ou por debito atomico do Saldo PlayArena.
+
+## Modo temporario sem antecipacao
+
+- `BOOKING_PAYMENT_ENABLED=true` e o default seguro: novas reservas seguem o checkout, Pix/Saldo PlayArena, hold, webhook e conversao atuais. `PAYMENT_PRODUCTION_ENABLED` continua controlando separadamente a disponibilidade de pagamentos produtivos.
+- Para o periodo sem cobranca, configure `BOOKING_PAYMENT_ENABLED=false` **somente no backend**. Nao e necessario remover credenciais nem alterar o frontend. Para reativar, volte a `true` e reinicie/reimplante a API; nao ha migration de reativacao.
+- O quote autenticado informa `payment_required=false`, resolve quadra, modalidade, horario e preco reais e nao consulta o saldo. O mesmo `/reservar` mostra valor integral a pagar na arena e envia `POST /player/reservations`; o backend valida novamente perfil, horario, duracao, preco, bloqueios e disponibilidade antes de inserir uma reserva `pending`.
+- A reserva gratuita usa `court_price_total=preco real`, `booking_amount_paid=0.00`, `amount_due_at_venue=court_price_total`, `payment_id=null` e `currency=BRL`. Nao cria payment, Pix, hold nem transacao de wallet. O lock transacional compartilhado com o checkout, a constraint de overlap e a resposta idempotente para o mesmo player/slot impedem duplicidade.
+- A flag afeta **apenas novas solicitacoes**. Webhooks e polling de pagamentos anteriores continuam ativos. Reembolsos e mensagens de cancelamento/recusa derivam de `booking_amount_paid` e `payment_id` da reserva: reserva gratuita nao gera credito; reserva antiga paga continua gerando credito pelas regras atuais, mesmo com a flag desligada.
+- A wallet segue visivel no perfil e no historico, mas nao participa de nova reserva gratuita. Em `/admin/analytics/overview`, `free_bookings` e `paid_bookings` contam reservas do app pelo snapshot financeiro, sem payment/evento ficticio; reservas manuais nao entram nesses dois subtotais.
 
 ## Checkout e webhook
 

@@ -26,6 +26,8 @@ def platform_overview(days: int) -> dict[str, Any]:
             (select count(*) from public.profiles p cross join bounds b where p.created_at >= b.start_at) as users,
             (select count(*) from public.analytics_events e cross join bounds b where e.event_name = 'availability_searched' and e.occurred_at >= b.start_at) as searches,
             (select count(*) from public.reservations r cross join bounds b where r.created_at >= b.start_at) as reservations,
+            (select count(*) from public.reservations r cross join bounds b where r.created_at >= b.start_at and r.source = 'app' and r.payment_id is null and r.booking_amount_paid = 0) as free_bookings,
+            (select count(*) from public.reservations r cross join bounds b where r.created_at >= b.start_at and r.source = 'app' and r.booking_amount_paid > 0) as paid_bookings,
             (select coalesce(sum(r.price) filter (where r.status in ('confirmed','completed')), 0) from public.reservations r cross join bounds b where r.created_at >= b.start_at) as gmv,
             (select coalesce(avg(r.price) filter (where r.status in ('confirmed','completed')), 0) from public.reservations r cross join bounds b where r.created_at >= b.start_at) as average_ticket,
             (select coalesce(avg(extract(epoch from (r.confirmed_at-r.created_at))/60) filter (where r.confirmed_at is not null), 0) from public.reservations r cross join bounds b where r.created_at >= b.start_at) as confirmation_minutes

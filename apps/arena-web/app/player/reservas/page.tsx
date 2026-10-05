@@ -497,12 +497,12 @@ function ReservationDetails({
             <span className="text-[#9DA7B3]">Valor total</span>
             <b>{formatCurrencyBRL(reservation.court_price_total ?? reservation.price)}</b>
           </p>
-          <p className="flex justify-between gap-4">
+          {Number(reservation.booking_amount_paid) > 0 ? <p className="flex justify-between gap-4">
             <span className="text-[#9DA7B3]">Pago no PlayArena</span>
             <b className="text-[#8FFF3C]">
               {formatCurrencyBRL(reservation.booking_amount_paid ?? 0)}
             </b>
-          </p>
+          </p> : null}
           <p className="flex justify-between gap-4">
             <span className="text-[#9DA7B3]">A pagar na arena</span>
             <b>{formatCurrencyBRL(reservation.amount_due_at_venue ?? reservation.price)}</b>

@@ -1060,7 +1060,7 @@ def test_checkout_stores_pix_30_minutes_before_hold_expiration(monkeypatch, hold
     monkeypatch.setattr(payment_repository, "get_session_factory", lambda: TransactionFactory(session))
     monkeypatch.setattr(payment_repository, "_existing_checkout", lambda *_args: None)
     monkeypatch.setattr(payment_repository, "_lock_slot", lambda *_args: None)
-    monkeypatch.setattr(payment_repository, "_resolve_booking", lambda *_args, **_kwargs: {
+    monkeypatch.setattr(payment_repository, "resolve_booking", lambda *_args, **_kwargs: {
         "court_id": checkout_payload()["court_id"],
         "end_at": START_AT + timedelta(hours=1),
         "court_price_total": Decimal("115.00"),

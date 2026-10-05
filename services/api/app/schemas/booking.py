@@ -58,8 +58,7 @@ class PlayerReservationCreate(BaseModel):
 
     court_id: UUID
     start_at: datetime
-    customer_name: str = Field(min_length=1, max_length=120)
-    customer_phone: str = Field(min_length=1, max_length=30)
+    sport: str = Field(min_length=1, max_length=120)
 
     @field_validator("start_at")
     @classmethod

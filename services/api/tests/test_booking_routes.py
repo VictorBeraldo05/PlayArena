@@ -25,7 +25,7 @@ def route_request() -> Request:
 
 
 def reservation_request() -> PlayerReservationCreate:
-    return PlayerReservationCreate(court_id=COURT_A, start_at=FUTURE_START, customer_name="Jose", customer_phone="11999999999")
+    return PlayerReservationCreate(court_id=COURT_A, start_at=FUTURE_START, sport="Society")
 
 
 def test_availability_returns_server_resolved_option(monkeypatch) -> None:
@@ -187,12 +187,13 @@ def test_public_catalog_types_optional_city_for_postgresql(monkeypatch) -> None:
 
 
 def test_player_reservation_contract_rejects_client_controlled_fields() -> None:
-    assert set(reservation_request().model_dump()) == {"court_id", "start_at", "customer_name", "customer_phone"}
+    assert set(reservation_request().model_dump()) == {"court_id", "start_at", "sport"}
     with pytest.raises(ValueError):
-        PlayerReservationCreate(court_id=COURT_A, start_at=FUTURE_START, customer_name="Jose", customer_phone="11999999999", price=1)
+        PlayerReservationCreate(court_id=COURT_A, start_at=FUTURE_START, sport="Society", price=1)
 
 
 def test_player_reservation_conflict_is_controlled(monkeypatch) -> None:
+    monkeypatch.setattr(booking.settings, "booking_payment_enabled", False)
     monkeypatch.setattr(booking, "create_player_reservation", lambda user_id, data: (_ for _ in ()).throw(BookingConflictError()))
     with pytest.raises(HTTPException) as error:
         booking.post_player_reservation(route_request(), reservation_request(), PLAYER_A)
@@ -206,7 +207,8 @@ def test_only_player_role_can_create_or_list_reservations() -> None:
     assert booking.require_player(PLAYER_A, "player") == PLAYER_A
 
 
-def test_legacy_player_reservation_endpoint_requires_payment(monkeypatch) -> None:
+def test_paid_player_reservation_endpoint_requires_payment(monkeypatch) -> None:
+    monkeypatch.setattr(booking.settings, "booking_payment_enabled", True)
     called = False
 
     def legacy_create(*_args, **_kwargs):

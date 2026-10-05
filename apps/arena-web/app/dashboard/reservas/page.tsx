@@ -280,15 +280,17 @@ function PendingReservationCard({
         <h3 className="text-base font-extrabold">{reservation.customer_name}</h3>
         <p className="mt-1 text-sm text-[#AAB7C5]">{reservation.court_name}</p>
       </div>
-      <div className="mt-4 grid grid-cols-2 gap-3 rounded-2xl border border-white/[.07] bg-[#080D14]/45 p-3 text-xs">
+      <div className={`mt-4 grid gap-3 rounded-2xl border border-white/[.07] bg-[#080D14]/45 p-3 text-xs ${Number(reservation.booking_amount_paid) > 0 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+        {Number(reservation.booking_amount_paid) > 0 ? (
         <p>
           <span className="block text-[#9DA7B3]">Já pago</span>
           <b className="mt-1 block text-[#8FFF3C]">
             {formatCurrencyBRL(reservation.booking_amount_paid ?? 0)}
           </b>
         </p>
-        <p className="border-l border-white/[.08] pl-3">
-          <span className="block text-[#9DA7B3]">Receber no local</span>
+        ) : null}
+        <p className={Number(reservation.booking_amount_paid) > 0 ? 'border-l border-white/[.08] pl-3' : ''}>
+          <span className="block text-[#9DA7B3]">{Number(reservation.booking_amount_paid) > 0 ? 'Receber no local' : 'Valor a receber na arena'}</span>
           <b className="mt-1 block">
             {formatCurrencyBRL(reservation.amount_due_at_venue ?? reservation.price)}
           </b>
