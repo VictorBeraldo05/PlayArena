@@ -31,6 +31,7 @@ class RenderedEmail:
     subject: str
     html: str
     text: str
+    preheader: str
 
 
 MONTHS_PT_BR = (
@@ -52,6 +53,7 @@ def notification_kind(previous_status: str, next_status: str) -> NotificationKin
 
 def render_reservation_email(reservation: ReservationEmailData, kind: NotificationKind, frontend_url: str) -> RenderedEmail:
     title, introduction, cta_label, cta_path = _copy_for(kind)
+    preheader = _preheader_for(kind, reservation.arena_name)
     if kind in {"rejected", "cancelled"} and reservation.credited_to_wallet and reservation.booking_amount_paid > 0:
         introduction += f" {format_currency_brl(reservation.booking_amount_paid)} voltaram para o seu Saldo PlayArena."
     cta_url = f"{frontend_url.rstrip('/')}{cta_path}"
@@ -83,6 +85,7 @@ def render_reservation_email(reservation: ReservationEmailData, kind: Notificati
     )
     html = f'''<!doctype html>
 <html lang="pt-BR"><body style="margin:0;padding:24px 12px;background:#080D14;color:#FFFFFF;font-family:Arial,sans-serif">
+  {_hidden_preheader(preheader)}
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#111923;border:1px solid #253240;border-radius:18px;overflow:hidden">
       <tr><td style="padding:28px 28px 16px;color:#8FFF3C;font-size:13px;font-weight:800;letter-spacing:1.4px">PLAYARENA</td></tr>
@@ -93,10 +96,12 @@ def render_reservation_email(reservation: ReservationEmailData, kind: Notificati
   </td></tr></table>
 </body></html>'''
     text = f"PLAYARENA\n\n{title}\n\n{introduction}\n\n{text_details}\n\n{cta_label}: {cta_url}\n"
-    return RenderedEmail(subject=_subject_for(kind), html=html, text=text)
+    return RenderedEmail(subject=_subject_for(kind), html=html, text=text, preheader=preheader)
 
 
 def render_owner_new_reservation_email(reservation: ReservationEmailData, frontend_url: str) -> RenderedEmail:
+    local_start = _in_sao_paulo(reservation.start_at)
+    preheader = f"{reservation.arena_name} • {local_start:%d/%m} às {local_start:%H:%M}"
     due = reservation.amount_due_at_venue if reservation.amount_due_at_venue is not None else reservation.price - reservation.booking_amount_paid
     details = [
         ("Arena", reservation.arena_name),
@@ -118,6 +123,7 @@ def render_owner_new_reservation_email(reservation: ReservationEmailData, fronte
     )
     html = f'''<!doctype html>
 <html lang="pt-BR"><body style="margin:0;padding:24px 12px;background:#080D14;color:#FFFFFF;font-family:Arial,sans-serif">
+  {_hidden_preheader(preheader)}
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#111923;border:1px solid #253240;border-radius:18px;overflow:hidden">
       <tr><td style="padding:28px 28px 16px;color:#8FFF3C;font-size:13px;font-weight:800;letter-spacing:1.4px">PLAYARENA</td></tr>
@@ -128,7 +134,25 @@ def render_owner_new_reservation_email(reservation: ReservationEmailData, fronte
   </td></tr></table>
 </body></html>'''
     plain = f"PLAYARENA\n\nNova pré-reserva\nVocê recebeu uma nova solicitação.\n\n{text_details}\n\nAnalisar pré-reserva: {url}\nAcesse o PlayArena para confirmar ou recusar.\n"
-    return RenderedEmail(subject="Nova pré-reserva no PlayArena", html=html, text=plain)
+    return RenderedEmail(subject="Nova pré-reserva no PlayArena", html=html, text=plain, preheader=preheader)
+
+
+def _hidden_preheader(value: str) -> str:
+    # Keep the following visible heading out of inbox previews without adding visible body space.
+    filler = "&#8204;&nbsp;" * 100
+    return (
+        '<div aria-hidden="true" style="display:none!important;visibility:hidden;opacity:0;'
+        'mso-hide:all;font-size:1px;line-height:1px;max-height:0;max-width:0;overflow:hidden">'
+        f"{escape(value)}{filler}</div>"
+    )
+
+
+def _preheader_for(kind: NotificationKind, arena_name: str) -> str:
+    if kind == "confirmed":
+        return f"Sua reserva na {arena_name} foi confirmada."
+    if kind == "rejected":
+        return "Veja os detalhes da sua solicitação."
+    return f"Sua reserva na {arena_name} foi cancelada."
 
 
 def format_date_pt_br(value: datetime) -> str:

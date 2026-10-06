@@ -1,7 +1,10 @@
 import asyncio
+import re
 import sys
 from datetime import datetime, timezone
 from decimal import Decimal
+from html import escape
+from html.parser import HTMLParser
 from types import SimpleNamespace
 
 import pytest
@@ -320,12 +323,91 @@ def test_new_owner_email_links_to_specific_reservation_with_correct_amounts(paid
         "https://useplayarena.com.br",
     )
     assert message.subject == "Nova pr\u00e9-reserva no PlayArena"
+    assert message.preheader == "Boleiros • 18/09 às 20:00"
     assert f"/dashboard/reservas?reservation={RESERVATION_ID}" in message.html
     assert "Analisar pr\u00e9-reserva" in message.html
     assert "Boleiros" in message.text and "Campo 1" in message.text and "Society" in message.text
     assert f"Valor a receber na arena: {expected_due}" in message.text
     assert ("Pago no PlayArena: R$ 5,00" in message.text) is (paid > 0)
     assert "href=" in message.html and message.html.count("<a ") == 1
+
+
+class EmailStructureParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stack: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag not in {"br", "hr", "img", "meta"}:
+            self.stack.append(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        assert self.stack and self.stack.pop() == tag
+
+
+def assert_hidden_preheader(message) -> None:
+    match = re.search(r"<body\b[^>]*>\s*(<div\b[^>]*>.*?</div>)", message.html, re.DOTALL)
+    assert match is not None
+    hidden = match.group(1)
+    assert f">{escape(message.preheader)}" in hidden
+    assert 'aria-hidden="true"' in hidden
+    assert "display:none!important" in hidden
+    assert "visibility:hidden" in hidden
+    assert "mso-hide:all" in hidden
+    assert "max-height:0" in hidden and "overflow:hidden" in hidden
+    assert hidden.count("&#8204;&nbsp;") == 100
+    assert message.preheader not in message.text
+    parser = EmailStructureParser()
+    parser.feed(message.html)
+    parser.close()
+    assert not parser.stack
+
+
+def test_owner_new_reservation_has_hidden_preheader_and_escaped_arena_name() -> None:
+    payload = reservation_payload(email="owner@example.com")
+    payload["arena_name"] = 'Boleiros <script>alert("x")</script> & Cia'
+    message = render_owner_new_reservation_email(
+        ReservationNotificationService._to_email_data(payload), "https://useplayarena.com.br"
+    )
+
+    assert message.subject == "Nova pré-reserva no PlayArena"
+    assert message.preheader == 'Boleiros <script>alert("x")</script> & Cia • 18/09 às 20:00'
+    assert_hidden_preheader(message)
+    assert "<script>" not in message.html
+    assert "&lt;script&gt;" in message.html
+    assert "&amp; Cia" in message.html
+
+
+@pytest.mark.parametrize(
+    ("kind", "subject", "preheader"),
+    [
+        ("confirmed", "Sua reserva foi confirmada ✅", "Sua reserva na Boleiros foi confirmada."),
+        ("rejected", "Sua pré-reserva não foi confirmada", "Veja os detalhes da sua solicitação."),
+        ("cancelled", "Reserva cancelada", "Sua reserva na Boleiros foi cancelada."),
+    ],
+)
+def test_status_emails_have_short_hidden_preheaders(kind, subject, preheader) -> None:
+    message = render_reservation_email(
+        ReservationNotificationService._to_email_data(reservation_payload()), kind, "https://useplayarena.com.br"
+    )
+
+    assert message.subject == subject
+    assert message.preheader == preheader
+    assert_hidden_preheader(message)
+
+
+@pytest.mark.parametrize("kind", ["confirmed", "cancelled"])
+def test_status_preheaders_escape_dynamic_arena_name(kind) -> None:
+    payload = reservation_payload()
+    payload["arena_name"] = '<img src=x onerror="alert(1)"> & Arena'
+    message = render_reservation_email(
+        ReservationNotificationService._to_email_data(payload), kind, "https://useplayarena.com.br"
+    )
+
+    assert_hidden_preheader(message)
+    assert "<img" not in message.html
+    assert "&lt;img" in message.html
+    assert "&amp; Arena" in message.html
 
 
 def test_new_owner_notification_sends_per_owner_without_affecting_reservation() -> None:
