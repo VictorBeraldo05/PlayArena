@@ -7,6 +7,7 @@ import { Arena, Profile } from '@playarena/types';
 
 import { supabase } from '../lib/supabase';
 import { clearOwnerArenaCache } from '../lib/owner-arena-cache';
+import { authDiagnostic, createAuthHydrationGate, loadAuthData } from '../lib/auth-hydration';
 
 interface SignUpInput {
   fullName: string;
@@ -44,33 +45,6 @@ interface AuthContextValue {
 
 export const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-async function fetchProfile(userId: string): Promise<Profile | null> {
-  const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single();
-  if (error) throw error;
-  return data as Profile;
-}
-
-async function fetchOwnedArenas(userId: string): Promise<Arena[]> {
-  const { data, error } = await supabase
-    .from('arena_owners')
-    .select('arenas(*)')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: true });
-
-  if (error) throw error;
-  if (!data) return [];
-
-  const rows = data as { arenas: Arena | Arena[] | null }[];
-
-  return rows.flatMap((item) => {
-    if (Array.isArray(item.arenas)) {
-      return item.arenas;
-    }
-
-    return item.arenas ? [item.arenas] : [];
-  });
-}
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -78,46 +52,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [authDataError, setAuthDataError] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const hydrationVersion = useRef(0);
-  const readyUserId = useRef<string | null>(null);
+  const gate = useRef(createAuthHydrationGate());
+  const [pendingHydration, setPendingHydration] = useState<{ session: Session; version: number } | null>(null);
 
-  async function hydrateAuth(nextSession: Session | null) {
-    const version = ++hydrationVersion.current;
-    if (!nextSession?.user || (readyUserId.current && readyUserId.current !== nextSession.user.id)) {
-      clearOwnerArenaCache();
-      readyUserId.current = null;
-    }
-    setIsLoading(true);
-    setSession(nextSession);
-    setProfile(null);
-    setOwnedArenas([]);
-    setAuthDataError(false);
-
-    if (!nextSession?.user) {
-      setProfile(null);
-      setOwnedArenas([]);
-      setIsLoading(false);
-      return;
-    }
-
-    try {
-      const [nextProfile, arenas] = await Promise.all([
-        fetchProfile(nextSession.user.id),
-        fetchOwnedArenas(nextSession.user.id),
-      ]);
-      if (version !== hydrationVersion.current) return;
+  useEffect(() => {
+    if (!pendingHydration) return;
+    let active = true;
+    const { session: nextSession, version } = pendingHydration;
+    // Run after the auth callback returns; use this event's token for both REST requests.
+    void loadAuthData(supabase, nextSession).then(({ profile: nextProfile, ownedArenas: arenas }) => {
+      if (!active || !gate.current.complete(version, nextSession.user.id, true)) return;
       setProfile(nextProfile);
       setOwnedArenas(arenas);
-      setAuthDataError(!nextProfile);
-      readyUserId.current = nextProfile ? nextSession.user.id : null;
-    } catch {
-      if (version !== hydrationVersion.current) return;
+      setAuthDataError(false);
+    }).catch(() => {
+      if (!active || !gate.current.complete(version, nextSession.user.id, false)) return;
       setAuthDataError(true);
-      readyUserId.current = null;
-    } finally {
-      if (version === hydrationVersion.current) setIsLoading(false);
-    }
-  }
+    }).finally(() => {
+      if (active && gate.current.currentVersion() === version) setIsLoading(false);
+    });
+    return () => { active = false; };
+  }, [pendingHydration]);
 
   useEffect(() => {
     let active = true;
@@ -125,11 +80,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // The SDK emits INITIAL_SESSION for this listener, so a parallel getSession would hydrate twice.
     const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (!active) return;
-      if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && nextSession?.user.id === readyUserId.current) {
+      authDiagnostic('auth_event', { event, session_present: Boolean(nextSession), access_token_present: Boolean(nextSession?.access_token) });
+      const decision = gate.current.receive(event, nextSession);
+      if (decision.kind === 'pending') return;
+      if (decision.kind === 'ready') {
         setSession(nextSession);
         return;
       }
-      void hydrateAuth(nextSession);
+      if (decision.kind === 'signed-out' || decision.kind === 'invalid-session') {
+        clearOwnerArenaCache();
+        setPendingHydration(null);
+        setSession(decision.kind === 'signed-out' ? null : nextSession);
+        setProfile(null);
+        setOwnedArenas([]);
+        setAuthDataError(decision.kind === 'invalid-session');
+        setIsLoading(false);
+        return;
+      }
+      clearOwnerArenaCache();
+      setIsLoading(true);
+      setSession(nextSession);
+      setProfile(null);
+      setOwnedArenas([]);
+      setAuthDataError(false);
+      setPendingHydration({ session: decision.session, version: decision.version });
     });
 
     return () => {
@@ -172,7 +146,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   async function signOut() {
     setErrorMessage(null);
     clearOwnerArenaCache();
-    readyUserId.current = null;
+    gate.current.invalidate();
+    setPendingHydration(null);
     setSession(null); setProfile(null); setOwnedArenas([]); setIsLoading(false);
     await supabase.auth.signOut();
   }
@@ -182,14 +157,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    const version = gate.current.currentVersion();
     try {
-      const [nextProfile, arenas] = await Promise.all([fetchProfile(session.user.id), fetchOwnedArenas(session.user.id)]);
+      const { profile: nextProfile, ownedArenas: arenas } = await loadAuthData(supabase, session);
+      if (gate.current.currentVersion() !== version) return;
       setProfile(nextProfile);
       setOwnedArenas(arenas);
-      setAuthDataError(!nextProfile);
-      readyUserId.current = nextProfile ? session.user.id : null;
+      setAuthDataError(false);
+      gate.current.complete(version, session.user.id, true);
     } catch {
+      if (gate.current.currentVersion() !== version) return;
       setAuthDataError(true);
+      gate.current.complete(version, session.user.id, false);
     }
   }
 
