@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Suspense, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 import { OwnerGuard } from '../../../components/owner-guard';
 import { OwnerNavigation } from '../../../components/owner-navigation';
@@ -23,6 +24,11 @@ type Reservation = {
   status: string;
   source: string;
 };
+type ReservationDetail = Reservation & {
+  arena_id: string;
+  arena_name: string;
+  sport_name: string;
+};
 type Period = 'today' | 'week' | 'all';
 type Action = 'confirm' | 'cancel';
 
@@ -37,11 +43,22 @@ const dayKeyFormatter = new Intl.DateTimeFormat('en-CA', {
   day: '2-digit',
   timeZone: BRAZIL_TIME_ZONE,
 });
+const fullDateFormatter = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'long', timeZone: BRAZIL_TIME_ZONE });
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export default function ReservationsPage() {
+  return <Suspense fallback={null}><ReservationsContent /></Suspense>;
+}
+
+function ReservationsContent() {
+  const router = useRouter();
+  const params = useSearchParams();
+  const reservationId = params.get('reservation');
   const { session } = useAuth();
   const token = session?.access_token;
   const [items, setItems] = useState<Reservation[] | null>(null);
+  const [detail, setDetail] = useState<ReservationDetail | null>(null);
+  const [detailError, setDetailError] = useState<{ id: string; message: string } | null>(null);
   const [status, setStatus] = useState('all');
   const [period, setPeriod] = useState<Period>('week');
   const [notice, setNotice] = useState('');
@@ -49,7 +66,23 @@ export default function ReservationsPage() {
   const [activeId, setActiveId] = useState('');
   const [now] = useState(() => new Date());
   const lock = useRef(false);
-  usePageReadyResource('owner-reservations', items !== null);
+  const selectedDetail = detail?.id === reservationId ? detail : null;
+  const selectedError = reservationId && !UUID_PATTERN.test(reservationId)
+    ? 'Link de reserva inválido.'
+    : detailError?.id === reservationId ? detailError.message : '';
+  usePageReadyResource('owner-reservations', items !== null && (!reservationId || Boolean(selectedDetail || selectedError)));
+
+  async function refreshDetail(id: string, accessToken = token) {
+    if (!accessToken) return;
+    try {
+      const current = await apiRequest<ReservationDetail>(`/owner/reservations/${id}`, accessToken, { cache: 'no-store' });
+      setDetail(current);
+      setDetailError(null);
+    } catch {
+      setDetail(null);
+      setDetailError({ id, message: 'Esta reserva não está disponível para esta conta.' });
+    }
+  }
 
   async function refresh(accessToken = token) {
     if (!accessToken) return;
@@ -85,6 +118,20 @@ export default function ReservationsPage() {
     };
   }, [token]);
 
+  useEffect(() => {
+    if (!token || !reservationId) return;
+    if (!UUID_PATTERN.test(reservationId)) return;
+    let active = true;
+    void apiRequest<ReservationDetail>(`/owner/reservations/${reservationId}`, token, { cache: 'no-store' })
+      .then((current) => {
+        if (active) { setDetail(current); setDetailError(null); }
+      })
+      .catch(() => {
+        if (active) setDetailError({ id: reservationId, message: 'Esta reserva não está disponível para esta conta.' });
+      });
+    return () => { active = false; };
+  }, [reservationId, token]);
+
   async function updateStatus(reservation: Reservation, next: Action) {
     if (!token || lock.current) return;
     lock.current = true;
@@ -92,10 +139,15 @@ export default function ReservationsPage() {
     setActing(next);
     try {
       await apiRequest(`/owner/reservations/${reservation.id}/${next}`, token, { method: 'POST' });
+      if (reservationId === reservation.id) {
+        setDetail((current) => current?.id === reservation.id ? { ...current, status: next === 'confirm' ? 'confirmed' : 'cancelled' } : current);
+      }
       setNotice(next === 'confirm' ? 'Reserva confirmada.' : 'Reserva recusada.');
       await refresh(token);
+      if (reservationId === reservation.id) await refreshDetail(reservation.id, token);
       window.dispatchEvent(new Event('playarena:reservations-changed'));
     } catch (error) {
+      if (reservationId === reservation.id) await refreshDetail(reservation.id, token);
       const message = error instanceof Error ? error.message : '';
       setNotice(
         message.includes('acabou de ser reservado')
@@ -221,8 +273,97 @@ export default function ReservationsPage() {
           )}
         </div>
         <OwnerNavigation />
+        {reservationId ? (
+          <ReservationDetailPanel
+            active={activeId === reservationId}
+            action={acting}
+            error={selectedError}
+            notice={notice}
+            onClose={() => router.replace('/dashboard/reservas')}
+            onRetry={() => void refreshDetail(reservationId)}
+            onUpdate={updateStatus}
+            reservation={selectedDetail}
+          />
+        ) : null}
       </main>
     </OwnerGuard>
+  );
+}
+
+function ReservationDetailPanel({
+  reservation,
+  error,
+  notice,
+  active,
+  action,
+  onClose,
+  onRetry,
+  onUpdate,
+}: {
+  reservation: ReservationDetail | null;
+  error: string;
+  notice: string;
+  active: boolean;
+  action: Action | null;
+  onClose: () => void;
+  onRetry: () => void;
+  onUpdate: (reservation: Reservation, action: Action) => Promise<void>;
+}) {
+  const paid = Number(reservation?.booking_amount_paid ?? 0) > 0;
+  return (
+    <div aria-label="Detalhes da pré-reserva" aria-modal="true" className="fixed inset-0 z-50 overflow-y-auto bg-[#080D14] text-white" role="dialog">
+      <div className="mx-auto flex min-h-[100dvh] w-full max-w-[600px] flex-col px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))] sm:px-6">
+        <header className="flex items-center gap-3">
+          <button aria-label="Voltar para reservas" className="grid min-h-11 min-w-11 place-items-center rounded-xl border border-white/10 text-2xl text-[#C3CDD7]" onClick={onClose} type="button">‹</button>
+          <div className="min-w-0">
+            <p className="text-[10px] font-extrabold uppercase tracking-[.16em] text-[#8FFF3C]">PlayArena</p>
+            <h2 className="text-xl font-extrabold tracking-[-.04em]">{reservation?.status === 'pending' ? 'Nova pré-reserva' : 'Detalhes da reserva'}</h2>
+          </div>
+        </header>
+        {error ? (
+          <section className="mt-8 rounded-[20px] border border-white/10 bg-[#111923] p-5">
+            <p className="text-sm text-[#C3CDD7]">{error}</p>
+            <button className="mt-4 text-sm font-bold text-[#8FFF3C]" onClick={onRetry} type="button">Tentar novamente</button>
+          </section>
+        ) : reservation ? (
+          <>
+            <section className="mt-6 space-y-5 rounded-[22px] border border-white/[.08] bg-[#111923] p-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-extrabold uppercase tracking-[.14em] text-[#9DA7B3]">Arena</p>
+                  <h3 className="mt-1 break-words text-xl font-extrabold">{reservation.arena_name}</h3>
+                  <p className="mt-1 break-words text-sm text-[#C3CDD7]">{reservation.court_name} · {reservation.sport_name}</p>
+                  <p className="mt-3 text-xs text-[#9DA7B3]">Solicitado por {reservation.customer_name}</p>
+                </div>
+                <StatusBadge status={reservation.status} />
+              </div>
+              <div className="border-t border-white/[.08] pt-4">
+                <p className="text-[10px] font-extrabold uppercase tracking-[.14em] text-[#9DA7B3]">Data e horário</p>
+                <p className="mt-1 text-sm font-bold">{fullDateFormatter.format(new Date(reservation.start_at))}</p>
+                <p className="mt-1 text-lg font-extrabold">{formatTimeBR(reservation.start_at)} – {formatTimeBR(reservation.end_at)}</p>
+              </div>
+              <div className="space-y-2 border-t border-white/[.08] pt-4 text-sm">
+                <p className="flex justify-between gap-3"><span className="text-[#9DA7B3]">{paid ? 'Valor total' : 'Valor do campo'}</span><b className="text-right">{formatCurrencyBRL(reservation.court_price_total ?? reservation.price)}</b></p>
+                {paid ? <p className="flex justify-between gap-3"><span className="text-[#9DA7B3]">Pago no PlayArena</span><b className="text-right text-[#8FFF3C]">{formatCurrencyBRL(reservation.booking_amount_paid)}</b></p> : null}
+                <p className="flex justify-between gap-3 border-t border-white/[.08] pt-3"><span className="text-[#C3CDD7]">Valor a receber na arena</span><b className="text-right text-base">{formatCurrencyBRL(reservation.amount_due_at_venue ?? reservation.price)}</b></p>
+              </div>
+            </section>
+            {notice ? <p aria-live="polite" className="mt-4 text-sm text-[#C3CDD7]">{notice}</p> : null}
+            {reservation.status !== 'pending' ? (
+              <p className="mt-5 rounded-2xl border border-white/[.08] bg-[#111923] p-4 text-sm text-[#C3CDD7]">
+                {reservation.status === 'confirmed' ? 'Esta solicitação já foi confirmada.' : reservation.status === 'cancelled' ? 'Esta solicitação já foi cancelada ou recusada.' : 'Esta solicitação já foi processada.'}
+              </p>
+            ) : null}
+            {reservation.status === 'pending' ? (
+              <div className="sticky bottom-0 mt-auto grid grid-cols-2 gap-2 bg-[#080D14]/95 pb-[max(.5rem,env(safe-area-inset-bottom))] pt-5 backdrop-blur">
+                <button className="owner-confirm-button min-h-14" disabled={active} onClick={() => void onUpdate(reservation, 'confirm')} type="button">{active && action === 'confirm' ? 'Confirmando...' : 'Confirmar reserva'}</button>
+                <button className="owner-reject-button min-h-14" disabled={active} onClick={() => void onUpdate(reservation, 'cancel')} type="button">{active && action === 'cancel' ? 'Recusando...' : 'Recusar'}</button>
+              </div>
+            ) : null}
+          </>
+        ) : <p className="mt-8 text-sm text-[#9DA7B3]">Carregando reserva...</p>}
+      </div>
+    </div>
   );
 }
 

@@ -457,6 +457,30 @@ def list_owner_reservations(user_id: str) -> list[dict[str, Any]]:
       join public.arena_owners ao on ao.arena_id=r.arena_id where ao.user_id=:user_id order by r.start_at desc""", {"user_id": user_id})
 
 
+def get_owner_reservation(user_id: str, reservation_id: UUID) -> dict[str, Any]:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        reservation = session.execute(text("""
+            select r.id, r.arena_id, r.court_id, r.customer_name,
+                   r.start_at, r.end_at, r.price, r.court_price_total,
+                   r.booking_amount_paid, r.amount_due_at_venue, r.currency,
+                   r.status, r.source, a.name as arena_name, c.name as court_name,
+                   coalesce(s.name, 'Modalidade nao informada') as sport_name
+            from public.reservations r
+            join public.arenas a on a.id = r.arena_id
+            join public.courts c on c.id = r.court_id
+            left join public.sports s on s.id = r.sport_id
+            where r.id = :reservation_id
+              and exists (
+                select 1 from public.arena_owners ao
+                where ao.arena_id = r.arena_id and ao.user_id = :user_id
+              )
+        """), {"user_id": user_id, "reservation_id": reservation_id}).mappings().one_or_none()
+        if reservation is None:
+            raise OwnerResourceNotFoundError
+        return dict(reservation)
+
+
 def list_owner_blocked_slots(user_id: str) -> list[dict[str, Any]]:
     return _rows("""select b.id,b.court_id,b.start_at,b.end_at,b.reason,c.name court_name from public.blocked_slots b join public.courts c on c.id=b.court_id join public.arena_owners ao on ao.arena_id=c.arena_id where ao.user_id=:user_id order by b.start_at""", {"user_id": user_id})
 

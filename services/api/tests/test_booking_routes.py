@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta
 from uuid import UUID
 
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
@@ -196,7 +196,7 @@ def test_player_reservation_conflict_is_controlled(monkeypatch) -> None:
     monkeypatch.setattr(booking.settings, "booking_payment_enabled", False)
     monkeypatch.setattr(booking, "create_player_reservation", lambda user_id, data: (_ for _ in ()).throw(BookingConflictError()))
     with pytest.raises(HTTPException) as error:
-        booking.post_player_reservation(route_request(), reservation_request(), PLAYER_A)
+        booking.post_player_reservation(route_request(), BackgroundTasks(), reservation_request(), PLAYER_A)
     assert error.value.status_code == 409
 
 
@@ -217,7 +217,7 @@ def test_paid_player_reservation_endpoint_requires_payment(monkeypatch) -> None:
 
     monkeypatch.setattr(booking, "create_player_reservation", legacy_create)
     with pytest.raises(HTTPException) as error:
-        booking.post_player_reservation(route_request(), reservation_request(), PLAYER_A)
+        booking.post_player_reservation(route_request(), BackgroundTasks(), reservation_request(), PLAYER_A)
 
     assert error.value.status_code == 409
     assert error.value.detail["code"] == "payment_required"

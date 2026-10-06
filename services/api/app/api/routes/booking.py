@@ -32,7 +32,7 @@ from app.schemas.booking import (
     PublicArenaSchedule,
     validate_future_booking_start,
 )
-from app.services.notifications import send_reservation_status_notification
+from app.services.notifications import send_new_owner_reservation_notification, send_reservation_status_notification
 
 router = APIRouter(tags=["availability and reservations"])
 logger = logging.getLogger(__name__)
@@ -130,6 +130,7 @@ def get_availability(
 @router.post("/player/reservations", status_code=status.HTTP_201_CREATED)
 def post_player_reservation(
     request: Request,
+    background_tasks: BackgroundTasks,
     input_data: PlayerReservationCreate,
     current_user: AuthenticatedUser = Depends(require_player),
 ) -> dict:
@@ -152,6 +153,8 @@ def post_player_reservation(
         raise HTTPException(status_code=409, detail={"code": "slot_unavailable", "message": "Esse horario nao esta mais disponivel."}) from exc
     except CheckoutConfigurationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if created.pop("_created_new", False):
+        background_tasks.add_task(send_new_owner_reservation_notification, created["reservation_id"])
     return created
 
 

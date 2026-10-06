@@ -10,11 +10,12 @@ export function authenticatedHome(role: UserRole | null | undefined, ownedArenas
 }
 
 export function safeInternalPath(value: string | null) {
-  if (!value || !value.startsWith('/') || value.startsWith('//') || value.startsWith('/\\')) return null;
+  if (!value || !value.startsWith('/') || value.startsWith('//') || /[\\\u0000-\u001f]/.test(value)) return null;
 
   try {
     const url = new URL(value, INTERNAL_ORIGIN);
     if (url.origin !== INTERNAL_ORIGIN) return null;
+    if (/%2f|%5c/i.test(url.pathname)) return null;
     return `${url.pathname}${url.search}${url.hash}`;
   } catch {
     return null;

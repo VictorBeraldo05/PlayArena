@@ -12,7 +12,7 @@ from app.repositories import booking_repository
 from app.repositories.owner_repository import ReservationStateError
 from app.schemas.auth import AuthenticatedUser
 from app.services.notifications.email import EmailNotificationConfig, ReservationNotificationService, ResendEmailSender
-from app.services.notifications.templates import ReservationEmailData, notification_kind, render_reservation_email
+from app.services.notifications.templates import ReservationEmailData, notification_kind, render_owner_new_reservation_email, render_reservation_email
 
 RESERVATION_ID = "50000000-0000-0000-0000-000000000001"
 OWNER = AuthenticatedUser(id="00000000-0000-0000-0000-000000000001")
@@ -295,3 +295,83 @@ def test_repeated_confirmation_schedules_no_second_notification(monkeypatch) -> 
 
     assert error.value.status_code == 409
     assert tasks.tasks == []
+
+
+@pytest.mark.parametrize(
+    ("paid", "expected_due"),
+    [(Decimal("0.00"), "R$ 115,00"), (Decimal("5.00"), "R$ 110,00")],
+)
+def test_new_owner_email_links_to_specific_reservation_with_correct_amounts(paid, expected_due) -> None:
+    payload = reservation_payload(email="owner@example.com")
+    payload.update(booking_amount_paid=paid, amount_due_at_venue=Decimal("115.00") - paid)
+    message = render_owner_new_reservation_email(
+        ReservationEmailData(
+            reservation_id=RESERVATION_ID,
+            recipient_email=payload["recipient_email"],
+            arena_name=payload["arena_name"],
+            court_name=payload["court_name"],
+            sport_name=payload["sport_name"],
+            start_at=payload["start_at"],
+            end_at=payload["end_at"],
+            price=payload["price"],
+            booking_amount_paid=paid,
+            amount_due_at_venue=payload["amount_due_at_venue"],
+        ),
+        "https://useplayarena.com.br",
+    )
+    assert message.subject == "Nova pr\u00e9-reserva no PlayArena"
+    assert f"/dashboard/reservas?reservation={RESERVATION_ID}" in message.html
+    assert "Analisar pr\u00e9-reserva" in message.html
+    assert "Boleiros" in message.text and "Campo 1" in message.text and "Society" in message.text
+    assert f"Valor a receber na arena: {expected_due}" in message.text
+    assert ("Pago no PlayArena: R$ 5,00" in message.text) is (paid > 0)
+    assert "href=" in message.html and message.html.count("<a ") == 1
+
+
+def test_new_owner_notification_sends_per_owner_without_affecting_reservation() -> None:
+    sent: list[tuple] = []
+    first = {**reservation_payload("owner-a@example.com"), "owner_user_id": "owner-a"}
+    second = {**reservation_payload("owner-b@example.com"), "owner_user_id": "owner-b"}
+    service = ReservationNotificationService(
+        enabled_config(),
+        sender_factory=lambda *_args: RecordingSender(sent),
+        fetch_owner_reservations=lambda _id: [first, second],
+    )
+
+    service.send_new_owner_reservation(RESERVATION_ID)
+
+    assert [row[0] for row in sent] == ["owner-a@example.com", "owner-b@example.com"]
+    assert [row[2] for row in sent] == [
+        f"reservation:{RESERVATION_ID}:new-owner:owner-a",
+        f"reservation:{RESERVATION_ID}:new-owner:owner-b",
+    ]
+
+
+def test_owner_email_lookup_uses_arena_ownership_and_only_pending_app_reservations(monkeypatch) -> None:
+    class Result:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return []
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, statement, params):
+            self.sql = str(statement).lower()
+            self.params = params
+            return Result()
+
+    session = Session()
+    monkeypatch.setattr(booking_repository, "get_session_factory", lambda: lambda: session)
+
+    assert booking_repository.get_owner_reservation_notifications(RESERVATION_ID) == []
+    assert "ao.arena_id = r.arena_id" in session.sql
+    assert "u.id = ao.user_id" in session.sql
+    assert "r.source = 'app' and r.status = 'pending'" in session.sql
+    assert session.params == {"reservation_id": RESERVATION_ID}

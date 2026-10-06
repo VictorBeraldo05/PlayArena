@@ -7,7 +7,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from pydantic import ValidationError
 from starlette.requests import Request
 
@@ -40,6 +40,29 @@ def checkout_payload(payment_method: str = "provider") -> dict:
         "payment_method": payment_method,
         "idempotency_key": "checkout_1234567890abcdef",
     }
+
+
+@pytest.mark.parametrize(
+    ("result", "should_notify"),
+    [
+        ({"result": "processed", "status": "paid", "reservation_id": "50000000-0000-0000-0000-000000000001"}, True),
+        ({"result": "already_final", "status": "paid", "reservation_id": "50000000-0000-0000-0000-000000000001"}, False),
+        ({"result": "processed", "status": "pending", "reservation_id": None}, False),
+    ],
+)
+def test_provider_webhook_queues_owner_email_only_when_reservation_is_new(monkeypatch, result, should_notify) -> None:
+    provider = SimpleNamespace(
+        name="sandbox",
+        verify_webhook=lambda *_args, **_kwargs: SimpleNamespace(event_id="evt-1"),
+    )
+    monkeypatch.setattr(service, "_configured_provider", lambda: provider)
+    monkeypatch.setattr(service, "process_provider_event", lambda *_args: result)
+    queued = []
+
+    assert service.process_webhook(
+        "sandbox", b"payload", "signature", on_reservation_created=queued.append
+    ) == result
+    assert queued == ([result["reservation_id"]] if should_notify else [])
 
 
 def payment_row(**changes) -> dict:
@@ -510,7 +533,7 @@ def test_checkout_route_sources_payer_email_from_authenticated_user(monkeypatch)
     monkeypatch.setattr(
         payments,
         "create_checkout",
-        lambda user_id, data, payer_email=None: captured.update(
+        lambda user_id, data, payer_email=None, **_kwargs: captured.update(
             user_id=user_id,
             data=data,
             payer_email=payer_email,
@@ -518,7 +541,7 @@ def test_checkout_route_sources_payer_email_from_authenticated_user(monkeypatch)
         or {"status": "pending"},
     )
 
-    result = payments.post_checkout(request, CheckoutCreate(**checkout_payload()), PLAYER)
+    result = payments.post_checkout(request, BackgroundTasks(), CheckoutCreate(**checkout_payload()), PLAYER)
 
     assert result == {"status": "pending"}
     assert captured["payer_email"] == PLAYER.email
@@ -765,7 +788,7 @@ def test_mixed_sandbox_completion_signs_only_provider_amount(monkeypatch) -> Non
             "currency": "BRL",
         },
     )
-    monkeypatch.setattr(service, "process_webhook", lambda *_args: {"result": "processed"})
+    monkeypatch.setattr(service, "process_webhook", lambda *_args, **_kwargs: {"result": "processed"})
 
     result = service.complete_sandbox_payment(PLAYER.id, PAYMENT_ID, "paid")
 

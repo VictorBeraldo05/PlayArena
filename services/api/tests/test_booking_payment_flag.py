@@ -5,7 +5,7 @@ from threading import Lock
 from uuid import UUID
 
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from starlette.requests import Request
 
 from app.api.routes import booking, payments
@@ -195,13 +195,34 @@ def test_free_route_uses_server_flag_and_paid_route_remains_blocked(monkeypatch)
     monkeypatch.setattr(booking, "create_player_reservation", lambda user_id, data: called.append((user_id, data)) or {"status": "pending"})
     payload = PlayerReservationCreate(court_id=COURT, start_at=START, sport="Society")
     monkeypatch.setattr(booking.settings, "booking_payment_enabled", False)
-    assert booking.post_player_reservation(request(), payload, PLAYER)["status"] == "pending"
+    assert booking.post_player_reservation(request(), BackgroundTasks(), payload, PLAYER)["status"] == "pending"
     assert called[0][0] == PLAYER.id
     monkeypatch.setattr(booking.settings, "booking_payment_enabled", True)
     with pytest.raises(HTTPException) as error:
-        booking.post_player_reservation(request(), payload, PLAYER)
+        booking.post_player_reservation(request(), BackgroundTasks(), payload, PLAYER)
     assert error.value.detail["code"] == "payment_required"
     assert len(called) == 1
+
+
+def test_free_route_queues_owner_email_only_for_new_reservation(monkeypatch) -> None:
+    monkeypatch.setattr(booking.settings, "booking_payment_enabled", False)
+    monkeypatch.setattr(booking, "enforce_rate_limit", lambda *_args, **_kwargs: None)
+    responses = iter([
+        {"reservation_id": RESERVATION, "status": "pending", "_created_new": True},
+        {"reservation_id": RESERVATION, "status": "pending"},
+    ])
+    monkeypatch.setattr(booking, "create_player_reservation", lambda *_args: next(responses))
+    payload = PlayerReservationCreate(court_id=COURT, start_at=START, sport="Society")
+
+    first_tasks = BackgroundTasks()
+    first = booking.post_player_reservation(request(), first_tasks, payload, PLAYER)
+    second_tasks = BackgroundTasks()
+    second = booking.post_player_reservation(request(), second_tasks, payload, PLAYER)
+
+    assert first == second == {"reservation_id": RESERVATION, "status": "pending"}
+    assert len(first_tasks.tasks) == 1
+    assert first_tasks.tasks[0].args == (RESERVATION,)
+    assert second_tasks.tasks == []
 
 
 def test_checkout_and_provider_cannot_start_while_free(monkeypatch) -> None:
@@ -210,7 +231,7 @@ def test_checkout_and_provider_cannot_start_while_free(monkeypatch) -> None:
     monkeypatch.setattr(service, "create_checkout_record", lambda **_kwargs: pytest.fail("hold created"))
     payload = CheckoutCreate(court_id=COURT, start_at=START, sport="Society", payment_method="provider", idempotency_key="checkout_1234567890abcdef")
     with pytest.raises(HTTPException) as error:
-        payments.post_checkout(request(), payload, PLAYER)
+        payments.post_checkout(request(), BackgroundTasks(), payload, PLAYER)
     assert error.value.detail["code"] == "booking_payment_disabled"
     with pytest.raises(service.PaymentConfigurationError):
         service.create_checkout(PLAYER.id, payload.model_dump(), payer_email=PLAYER.email)
@@ -220,9 +241,9 @@ def test_paid_checkout_route_is_available_again_when_flag_is_true(monkeypatch) -
     monkeypatch.setattr(payments.settings, "booking_payment_enabled", True)
     monkeypatch.setattr(payments, "enforce_rate_limit", lambda *_args, **_kwargs: None)
     called = []
-    monkeypatch.setattr(payments, "create_checkout", lambda user_id, data, payer_email=None: called.append((user_id, data, payer_email)) or {"status": "pending"})
+    monkeypatch.setattr(payments, "create_checkout", lambda user_id, data, payer_email=None, **_kwargs: called.append((user_id, data, payer_email)) or {"status": "pending"})
     payload = CheckoutCreate(court_id=COURT, start_at=START, sport="Society", payment_method="provider", idempotency_key="checkout_1234567890abcdef")
-    assert payments.post_checkout(request(), payload, PLAYER) == {"status": "pending"}
+    assert payments.post_checkout(request(), BackgroundTasks(), payload, PLAYER) == {"status": "pending"}
     assert called[0][0] == PLAYER.id and called[0][2] == PLAYER.email
 
 

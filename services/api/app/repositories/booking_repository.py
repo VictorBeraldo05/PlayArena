@@ -320,6 +320,7 @@ def create_player_reservation(user_id: str, data: dict[str, Any]) -> dict[str, A
                 "reservation_id": reservation["id"],
                 "booking_amount": reservation["booking_amount_paid"],
                 "payment_required": False,
+                "_created_new": True,
             }
     except IntegrityError as exc:
         raise BookingConflictError from exc
@@ -407,3 +408,23 @@ def get_reservation_notification(reservation_id: UUID) -> dict[str, Any] | None:
             where r.id = :reservation_id
         """), {"reservation_id": reservation_id}).mappings().one_or_none()
         return dict(row) if row else None
+
+
+def get_owner_reservation_notifications(reservation_id: UUID) -> list[dict[str, Any]]:
+    factory = get_session_factory()
+    with factory() as session:
+        rows = session.execute(text("""
+            select r.id, ao.user_id as owner_user_id, u.email as recipient_email,
+                   a.name as arena_name, c.name as court_name,
+                   coalesce(s.name, 'Modalidade nao informada') as sport_name,
+                   r.start_at, r.end_at, r.price, r.booking_amount_paid,
+                   r.amount_due_at_venue
+            from public.reservations r
+            join public.arenas a on a.id = r.arena_id
+            join public.courts c on c.id = r.court_id
+            left join public.sports s on s.id = r.sport_id
+            join public.arena_owners ao on ao.arena_id = r.arena_id
+            join auth.users u on u.id = ao.user_id
+            where r.id = :reservation_id and r.source = 'app' and r.status = 'pending'
+        """), {"reservation_id": reservation_id}).mappings().all()
+        return [dict(row) for row in rows]

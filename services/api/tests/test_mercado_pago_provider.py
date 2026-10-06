@@ -508,6 +508,7 @@ def test_public_webhook_route_forwards_official_metadata(
 
     assert response.status_code == 200
     assert response.json() == {"result": "processed"}
+    assert callable(captured["metadata"].pop("on_reservation_created"))
     assert captured == {
         "provider_name": "mercado_pago",
         "payload": b'{"type":"order"}',
@@ -674,6 +675,7 @@ def test_webhook_route_reads_dotted_query_and_case_insensitive_headers(
         content=b"{}",
     )
     assert response.status_code == 200
+    assert callable(captured.pop("on_reservation_created"))
     assert captured == {"request_id": "request-123", "data_id": ORDER_ID, "topic": "order"}
     assert "webhook_signature_invalid" not in caplog.text
 

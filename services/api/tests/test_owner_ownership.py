@@ -156,6 +156,83 @@ def test_reservation_confirmation_and_cancellation_follow_arena_ownership(user_i
             owner_repository._owned_reservation(session, user_id, reservation_id)
 
 
+@pytest.mark.parametrize(
+    ("user_id", "reservation_id", "expected_status"),
+    [
+        (OWNER_A, RESERVATION_A, "pending"),
+        (OWNER_B, RESERVATION_B, "confirmed"),
+        (OWNER_A, RESERVATION_B, None),
+        (OWNER_B, RESERVATION_A, None),
+    ],
+)
+def test_reservation_deep_link_reads_current_status_only_for_own_arena(monkeypatch, user_id, reservation_id, expected_status) -> None:
+    class DetailSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, statement, params):
+            sql = str(statement).lower()
+            assert "ao.arena_id = r.arena_id and ao.user_id = :user_id" in sql
+            assert params == {"user_id": user_id, "reservation_id": reservation_id}
+            owner_id = {RESERVATION_A: OWNER_A, RESERVATION_B: OWNER_B}[reservation_id]
+            status = {RESERVATION_A: "pending", RESERVATION_B: "confirmed"}[reservation_id]
+            row = {"id": reservation_id, "status": status} if owner_id == user_id else None
+            return Result(row)
+
+    monkeypatch.setattr(owner_repository, "get_session_factory", lambda: DetailSession)
+    if expected_status is None:
+        with pytest.raises(HTTPException) as error:
+            owner.get_owner_reservation(reservation_id, AuthenticatedUser(id=user_id))
+        assert error.value.status_code == 404
+    else:
+        detail = owner.get_owner_reservation(reservation_id, AuthenticatedUser(id=user_id))
+        assert detail == {"id": reservation_id, "status": expected_status}
+
+
+def test_reservation_deep_link_refreshes_processed_status(monkeypatch) -> None:
+    current_status = {"value": "pending"}
+
+    class DetailSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, _statement, params):
+            assert params == {"user_id": OWNER_A, "reservation_id": RESERVATION_A}
+            return Result({"id": RESERVATION_A, "status": current_status["value"]})
+
+    monkeypatch.setattr(owner_repository, "get_session_factory", lambda: DetailSession)
+    user = AuthenticatedUser(id=OWNER_A)
+    assert owner.get_owner_reservation(RESERVATION_A, user)["status"] == "pending"
+    current_status["value"] = "confirmed"
+    assert owner.get_owner_reservation(RESERVATION_A, user)["status"] == "confirmed"
+    current_status["value"] = "cancelled"
+    assert owner.get_owner_reservation(RESERVATION_A, user)["status"] == "cancelled"
+
+
+def test_owner_with_multiple_arenas_opens_reservation_by_id_not_selected_arena(monkeypatch) -> None:
+    class DetailSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, statement, params):
+            assert "selected_arena" not in str(statement).lower()
+            assert params["user_id"] == OWNER_A
+            return Result({"id": params["reservation_id"], "arena_id": ARENA_B})
+
+    monkeypatch.setattr(owner_repository, "get_session_factory", lambda: DetailSession)
+    result = owner.get_owner_reservation(RESERVATION_B, AuthenticatedUser(id=OWNER_A))
+    assert result == {"id": RESERVATION_B, "arena_id": ARENA_B}
+
+
 def test_owner_cannot_confirm_a_cancelled_reservation(monkeypatch) -> None:
     class Transaction:
         def __enter__(self):

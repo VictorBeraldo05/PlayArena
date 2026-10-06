@@ -10,8 +10,8 @@ from typing import Protocol
 from uuid import UUID
 
 from app.core.config import settings
-from app.repositories.booking_repository import get_reservation_notification
-from app.services.notifications.templates import NotificationKind, ReservationEmailData, RenderedEmail, notification_kind, render_reservation_email
+from app.repositories.booking_repository import get_owner_reservation_notifications, get_reservation_notification
+from app.services.notifications.templates import NotificationKind, ReservationEmailData, RenderedEmail, notification_kind, render_owner_new_reservation_email, render_reservation_email
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +57,34 @@ class ReservationNotificationService:
         config: EmailNotificationConfig,
         fetch_reservation: Callable[[UUID], dict | None] = get_reservation_notification,
         sender_factory: Callable[[str, str, int], EmailSender] = ResendEmailSender,
+        fetch_owner_reservations: Callable[[UUID], list[dict]] = get_owner_reservation_notifications,
     ) -> None:
         self.config = config
         self.fetch_reservation = fetch_reservation
         self.sender_factory = sender_factory
+        self.fetch_owner_reservations = fetch_owner_reservations
+
+    def send_new_owner_reservation(self, reservation_id: UUID) -> None:
+        if not self.config.enabled:
+            return
+        if not self.config.api_key or not self._is_safe_header_value(self.config.sender):
+            logger.warning("owner reservation notification failed reservation_id=%s reason=missing-email-configuration", reservation_id)
+            return
+        try:
+            recipients = self.fetch_owner_reservations(reservation_id)
+        except Exception as exc:  # noqa: BLE001 - notification failures must not affect bookings.
+            logger.warning("owner reservation notification failed reservation_id=%s error_type=%s", reservation_id, type(exc).__name__)
+            return
+        for row in recipients:
+            recipient = row.get("recipient_email")
+            if not self._is_valid_email(recipient):
+                continue
+            try:
+                message = render_owner_new_reservation_email(self._to_email_data(row), self.config.frontend_url)
+                sender = self.sender_factory(self.config.api_key, self.config.sender, self.config.timeout_seconds)
+                sender.send(recipient, message, f"reservation:{reservation_id}:new-owner:{row['owner_user_id']}")
+            except Exception as exc:  # noqa: BLE001 - another owner must still receive their email.
+                logger.warning("owner reservation notification failed reservation_id=%s error_type=%s", reservation_id, type(exc).__name__)
 
     def send_status_change(
         self,
@@ -159,3 +183,7 @@ def send_reservation_status_notification(
         next_status,
         notification_override=notification_override,
     )
+
+
+def send_new_owner_reservation_notification(reservation_id: UUID) -> None:
+    get_reservation_notification_service().send_new_owner_reservation(reservation_id)

@@ -276,6 +276,17 @@ def get_owner_reservations(current_user: AuthenticatedUser = Depends(require_are
     return owner_repository.list_owner_reservations(current_user.id)
 
 
+@router.get("/reservations/{reservation_id}")
+def get_owner_reservation(
+    reservation_id: UUID,
+    current_user: AuthenticatedUser = Depends(require_arena_owner),
+) -> dict:
+    try:
+        return owner_repository.get_owner_reservation(current_user.id, reservation_id)
+    except OwnerResourceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Reservation not found.") from exc
+
+
 @router.get("/blocked-slots")
 def get_owner_blocked_slots(current_user: AuthenticatedUser = Depends(require_arena_owner)) -> list[dict]:
     return owner_repository.list_owner_blocked_slots(current_user.id)

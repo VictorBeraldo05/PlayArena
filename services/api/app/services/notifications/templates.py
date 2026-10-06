@@ -96,6 +96,41 @@ def render_reservation_email(reservation: ReservationEmailData, kind: Notificati
     return RenderedEmail(subject=_subject_for(kind), html=html, text=text)
 
 
+def render_owner_new_reservation_email(reservation: ReservationEmailData, frontend_url: str) -> RenderedEmail:
+    due = reservation.amount_due_at_venue if reservation.amount_due_at_venue is not None else reservation.price - reservation.booking_amount_paid
+    details = [
+        ("Arena", reservation.arena_name),
+        ("Campo", reservation.court_name),
+        ("Esporte", reservation.sport_name),
+        ("Data", format_date_pt_br(reservation.start_at)),
+        ("Horário", f"{format_time_pt_br(reservation.start_at)} às {format_time_pt_br(reservation.end_at)}"),
+        ("Valor do campo", format_currency_brl(reservation.price)),
+    ]
+    if reservation.booking_amount_paid > 0:
+        details.append(("Pago no PlayArena", format_currency_brl(reservation.booking_amount_paid)))
+    details.append(("Valor a receber na arena", format_currency_brl(due)))
+    url = f"{frontend_url.rstrip('/')}/dashboard/reservas?reservation={reservation.reservation_id}"
+    text_details = "\n".join(f"{label}: {value}" for label, value in details)
+    html_details = "".join(
+        f'<tr><td style="padding:7px 0;color:#9DA7B3;font-size:14px">{escape(label)}</td>'
+        f'<td style="padding:7px 0;color:#FFFFFF;font-size:14px;font-weight:700;text-align:right">{escape(value)}</td></tr>'
+        for label, value in details
+    )
+    html = f'''<!doctype html>
+<html lang="pt-BR"><body style="margin:0;padding:24px 12px;background:#080D14;color:#FFFFFF;font-family:Arial,sans-serif">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#111923;border:1px solid #253240;border-radius:18px;overflow:hidden">
+      <tr><td style="padding:28px 28px 16px;color:#8FFF3C;font-size:13px;font-weight:800;letter-spacing:1.4px">PLAYARENA</td></tr>
+      <tr><td style="padding:0 28px 24px"><h1 style="margin:0 0 12px;font-size:26px;line-height:1.2;color:#FFFFFF">Nova pré-reserva</h1><p style="margin:0;color:#9DA7B3;font-size:16px;line-height:1.55">Você recebeu uma nova solicitação.</p></td></tr>
+      <tr><td style="padding:0 28px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-top:1px solid #253240;border-bottom:1px solid #253240">{html_details}</table></td></tr>
+      <tr><td style="padding:28px"><a href="{escape(url, quote=True)}" style="display:block;padding:15px 18px;border-radius:10px;background:#8FFF3C;color:#080D14;text-align:center;text-decoration:none;font-size:16px;font-weight:800">Analisar pré-reserva</a><p style="margin:16px 0 0;color:#9DA7B3;font-size:13px;text-align:center">Acesse o PlayArena para confirmar ou recusar.</p></td></tr>
+    </table>
+  </td></tr></table>
+</body></html>'''
+    plain = f"PLAYARENA\n\nNova pré-reserva\nVocê recebeu uma nova solicitação.\n\n{text_details}\n\nAnalisar pré-reserva: {url}\nAcesse o PlayArena para confirmar ou recusar.\n"
+    return RenderedEmail(subject="Nova pré-reserva no PlayArena", html=html, text=plain)
+
+
 def format_date_pt_br(value: datetime) -> str:
     local_value = _in_sao_paulo(value)
     return f"{local_value.day} de {MONTHS_PT_BR[local_value.month - 1]} de {local_value.year}"

@@ -2,7 +2,7 @@ import logging
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request, status
 from mercadopago.webhook import InvalidWebhookSignatureError, WebhookSignatureValidator
 
 from app.core.config import settings
@@ -23,6 +23,7 @@ from app.repositories.payment_repository import (
 from app.schemas.auth import AuthenticatedUser
 from app.schemas.booking import validate_future_booking_start
 from app.schemas.payment import CheckoutCreate, SandboxCompletion
+from app.services.notifications import send_new_owner_reservation_notification
 from app.services.payments.service import (
     PaymentConfigurationError,
     PaymentWebhookError,
@@ -37,6 +38,12 @@ router = APIRouter(tags=["payments and wallet"])
 webhook_router = APIRouter(prefix="/payments/webhooks", tags=["payment webhooks"])
 admin_router = APIRouter(prefix="/admin/payments", tags=["payment operations"])
 logger = logging.getLogger(__name__)
+
+
+def queue_owner_notification(background_tasks: BackgroundTasks):
+    return lambda reservation_id: background_tasks.add_task(
+        send_new_owner_reservation_notification, UUID(str(reservation_id))
+    )
 
 
 def require_player(
@@ -123,6 +130,7 @@ def checkout_quote(
 @router.post("/player/checkout", status_code=status.HTTP_201_CREATED)
 def post_checkout(
     request: Request,
+    background_tasks: BackgroundTasks,
     input_data: CheckoutCreate,
     current_user: AuthenticatedUser = Depends(require_player),
 ) -> dict:
@@ -130,7 +138,10 @@ def post_checkout(
         raise HTTPException(status_code=409, detail={"code": "booking_payment_disabled", "message": "Solicite a pre-reserva sem pagamento."})
     enforce_rate_limit(request, scope="checkout", principal=f"user:{current_user.id}", limit=settings.checkout_rate_limit_per_minute)
     try:
-        return create_checkout(current_user.id, input_data.model_dump(), payer_email=current_user.email)
+        return create_checkout(
+            current_user.id, input_data.model_dump(), payer_email=current_user.email,
+            on_reservation_created=queue_owner_notification(background_tasks),
+        )
     except (
         CheckoutNotFoundError,
         CheckoutSlotUnavailableError,
@@ -147,11 +158,15 @@ def post_checkout(
 def payment_status(
     payment_id: UUID,
     request: Request,
+    background_tasks: BackgroundTasks,
     current_user: AuthenticatedUser = Depends(require_player),
 ) -> dict:
     enforce_rate_limit(request, scope="payment-status", principal=f"user:{current_user.id}", limit=60)
     try:
-        return get_player_payment_status(current_user.id, payment_id)
+        return get_player_payment_status(
+            current_user.id, payment_id,
+            on_reservation_created=queue_owner_notification(background_tasks),
+        )
     except PaymentOwnershipError as exc:
         raise HTTPException(status_code=404, detail="Payment not found.") from exc
     except PaymentConfigurationError as exc:
@@ -161,11 +176,15 @@ def payment_status(
 @router.post("/player/payments/{payment_id}/sandbox-complete")
 def sandbox_complete(
     payment_id: UUID,
+    background_tasks: BackgroundTasks,
     input_data: SandboxCompletion,
     current_user: AuthenticatedUser = Depends(require_player),
 ) -> dict:
     try:
-        return complete_sandbox_payment(current_user.id, payment_id, input_data.outcome)
+        return complete_sandbox_payment(
+            current_user.id, payment_id, input_data.outcome,
+            on_reservation_created=queue_owner_notification(background_tasks),
+        )
     except (PaymentConfigurationError, PaymentOwnershipError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -178,12 +197,16 @@ def player_wallet(current_user: AuthenticatedUser = Depends(require_player)) -> 
 @webhook_router.post("/sandbox", status_code=status.HTTP_202_ACCEPTED)
 async def sandbox_payment_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_playarena_signature: str | None = Header(default=None),
 ) -> dict:
     enforce_rate_limit(request, scope="payment-webhook", limit=settings.payment_webhook_rate_limit_per_minute)
     payload = await request.body()
     try:
-        return process_webhook("sandbox", payload, x_playarena_signature)
+        return process_webhook(
+            "sandbox", payload, x_playarena_signature,
+            on_reservation_created=queue_owner_notification(background_tasks),
+        )
     except PaymentWebhookError as exc:
         raise HTTPException(status_code=exc.status_code, detail="Invalid payment webhook.") from exc
 
@@ -191,6 +214,7 @@ async def sandbox_payment_webhook(
 @webhook_router.post("/mercado-pago", status_code=status.HTTP_200_OK)
 async def mercado_pago_payment_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     topic: str = Query(alias="type", min_length=1, max_length=40),
 ) -> dict:
     enforce_rate_limit(request, scope="payment-webhook", limit=settings.payment_webhook_rate_limit_per_minute)
@@ -221,6 +245,7 @@ async def mercado_pago_payment_webhook(
             request_id=x_request_id,
             data_id=data_id,
             topic=topic,
+            on_reservation_created=queue_owner_notification(background_tasks),
         )
     except PaymentWebhookError as exc:
         raise HTTPException(status_code=exc.status_code, detail="Invalid payment webhook.") from exc
@@ -239,6 +264,7 @@ def admin_payments(
 def admin_reconcile_payment(
     payment_id: UUID,
     request: Request,
+    background_tasks: BackgroundTasks,
     current_user: AuthenticatedUser = Depends(require_admin),
 ) -> dict:
     enforce_rate_limit(
@@ -248,7 +274,9 @@ def admin_reconcile_payment(
         limit=settings.owner_mutation_rate_limit_per_minute,
     )
     try:
-        return reconcile_mercado_pago_payment(payment_id)
+        return reconcile_mercado_pago_payment(
+            payment_id, on_reservation_created=queue_owner_notification(background_tasks)
+        )
     except CheckoutNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Payment not found.") from exc
     except PaymentConfigurationError as exc:

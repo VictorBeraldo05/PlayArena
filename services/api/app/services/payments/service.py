@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import json
+from collections.abc import Callable
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -61,6 +62,11 @@ class PaymentWebhookError(Exception):
         self.status_code = status_code
 
 
+def _notify_new_reservation(result: dict, callback: Callable[[UUID | str], None] | None) -> None:
+    if callback and result.get("result") == "processed" and result.get("status") == "paid" and result.get("reservation_id"):
+        callback(result["reservation_id"])
+
+
 def _sandbox_provider() -> SandboxPaymentProvider:
     if not settings.payment_sandbox_enabled or settings.payment_provider != "sandbox":
         raise PaymentConfigurationError("O checkout online ainda nao esta disponivel.", "provider_unavailable")
@@ -112,7 +118,12 @@ def _payment_pix_expires_at(payment: dict) -> datetime:
     return expected
 
 
-def create_checkout(user_id: str, data: dict, payer_email: str | None = None) -> dict:
+def create_checkout(
+    user_id: str,
+    data: dict,
+    payer_email: str | None = None,
+    on_reservation_created: Callable[[UUID | str], None] | None = None,
+) -> dict:
     if not settings.booking_payment_enabled:
         raise PaymentConfigurationError("Booking payment is disabled.", "booking_payment_disabled")
     payment_method = data["payment_method"]
@@ -133,6 +144,8 @@ def create_checkout(user_id: str, data: dict, payer_email: str | None = None) ->
         quoted_provider_amount=data.get("quoted_provider_amount"),
     )
     if checkout["provider"] == "wallet":
+        if created and checkout.get("reservation_id") and on_reservation_created:
+            on_reservation_created(checkout["reservation_id"])
         return checkout
     if (
         settings.payment_environment == "production"
@@ -140,12 +153,12 @@ def create_checkout(user_id: str, data: dict, payer_email: str | None = None) ->
         and not settings.payment_provider_available_for_user(user_id)
     ):
         if not created and checkout.get("provider_payment_id"):
-            return get_player_payment_status(user_id, checkout["payment_id"])
+            return get_player_payment_status(user_id, checkout["payment_id"], on_reservation_created=on_reservation_created)
         raise PaymentConfigurationError("O Pix real esta desabilitado para esta conta.", "production_payment_unavailable")
     if not created and checkout["status"] != "pending":
         return checkout
     if not created and checkout.get("provider_payment_id"):
-        return get_player_payment_status(user_id, checkout["payment_id"])
+        return get_player_payment_status(user_id, checkout["payment_id"], on_reservation_created=on_reservation_created)
 
     try:
         provider = _configured_provider()
@@ -217,7 +230,11 @@ def create_checkout(user_id: str, data: dict, payer_email: str | None = None) ->
         ) from exc
 
 
-def get_player_payment_status(user_id: str, payment_id: UUID | str) -> dict:
+def get_player_payment_status(
+    user_id: str,
+    payment_id: UUID | str,
+    on_reservation_created: Callable[[UUID | str], None] | None = None,
+) -> dict:
     payment = get_player_payment(user_id, payment_id)
     _log_payment_expiry_diagnostic(payment)
     if (
@@ -255,7 +272,8 @@ def get_player_payment_status(user_id: str, payment_id: UUID | str) -> dict:
         payment_method=state.payment_method,
     )
     if state.status != "pending":
-        process_provider_event("mercado_pago", event, b"provider-status-poll")
+        result = process_provider_event("mercado_pago", event, b"provider-status-poll")
+        _notify_new_reservation(result, on_reservation_created)
         payment = get_player_payment(user_id, payment_id)
     if payment["status"] == "pending" and state.instructions:
         payment["instructions"] = asdict(
@@ -273,6 +291,7 @@ def process_webhook(
     request_id: str | None = None,
     data_id: str | None = None,
     topic: str | None = None,
+    on_reservation_created: Callable[[UUID | str], None] | None = None,
 ) -> dict:
     try:
         provider = _configured_provider()
@@ -297,10 +316,14 @@ def process_webhook(
     if result["result"] in {"amount_mismatch", "external_reference_mismatch", "payment_method_mismatch", "unknown_payment"}:
         logger.warning("payment.webhook.rejected provider=%s reason=%s", provider_name, result["result"])
         raise PaymentWebhookError("Webhook does not match a known payment.")
+    _notify_new_reservation(result, on_reservation_created)
     return result
 
 
-def reconcile_mercado_pago_payment(payment_id: UUID) -> dict:
+def reconcile_mercado_pago_payment(
+    payment_id: UUID,
+    on_reservation_created: Callable[[UUID | str], None] | None = None,
+) -> dict:
     payment = get_admin_payment_for_reconciliation(payment_id)
     if payment["provider"] != "mercado_pago" or not payment.get("provider_payment_id"):
         raise PaymentConfigurationError(
@@ -338,10 +361,16 @@ def reconcile_mercado_pago_payment(payment_id: UUID) -> dict:
             "A Order não corresponde ao pagamento PlayArena.",
             result["result"],
         )
+    _notify_new_reservation(result, on_reservation_created)
     return {**result, "provider_status": state.status, "status_detail": state.status_detail}
 
 
-def complete_sandbox_payment(user_id: str, payment_id: UUID, outcome: str) -> dict:
+def complete_sandbox_payment(
+    user_id: str,
+    payment_id: UUID,
+    outcome: str,
+    on_reservation_created: Callable[[UUID | str], None] | None = None,
+) -> dict:
     provider = _sandbox_provider()
     payment = get_player_payment(user_id, payment_id)
     if payment["provider"] != "sandbox" or not payment.get("provider_payment_id"):
@@ -353,4 +382,4 @@ def complete_sandbox_payment(user_id: str, payment_id: UUID, outcome: str) -> di
         amount=Decimal(payment["provider_amount"]),
         currency=payment["currency"],
     )
-    return process_webhook("sandbox", payload, signature)
+    return process_webhook("sandbox", payload, signature, on_reservation_created=on_reservation_created)
